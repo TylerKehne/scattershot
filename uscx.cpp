@@ -754,7 +754,7 @@ public:
     Block* SharedBlocks;
     int* SharedHashTab;
 
-    GlobalState(Configuration config)
+    GlobalState(Configuration& config)
     {
         AllBlocks = (Block*)calloc(config.TotalThreads * config.MaxBlocks + config.MaxSharedBlocks, sizeof(Block));
         AllSegments = (struct Segment**)malloc((config.MaxSharedSegments + config.TotalThreads * config.MaxLocalSegments) * sizeof(struct Segment*));
@@ -763,6 +763,10 @@ public:
         NSegments = (int*)calloc(config.TotalThreads + 1, sizeof(int));
         SharedBlocks = AllBlocks + config.TotalThreads * config.MaxBlocks;
         SharedHashTab = AllHashTabs + config.TotalThreads * config.MaxHashes;
+
+        // Init shared hash table.
+        for (int hashInx = 0; hashInx < config.MaxSharedHashes; hashInx++)
+            SharedHashTab[hashInx] = -1; 
     }
 };
 
@@ -876,6 +880,100 @@ Input* GetM64(const char* path)
     return fileInputs;
 }
 
+class ThreadState
+{
+public:
+    Block* Blocks;
+    int* HashTab;
+    int Id;
+    Block BaseBlock;
+
+    ThreadState(Configuration& config, GlobalState& gState, int id)
+    {
+        Id = id;
+        Blocks = gState.AllBlocks + Id * config.MaxBlocks;
+        HashTab = gState.AllHashTabs + Id * config.MaxHashes;
+    }
+
+    void Initialize(Configuration& config, GlobalState& gState, Vec3d initTruncPos)
+    {
+        // Init local hash table.
+        for (int hashInx = 0; hashInx < config.MaxHashes; hashInx++)
+            HashTab[hashInx] = -1; 
+
+        Blocks[0].pos = initTruncPos; //CHEAT TODO NOTE
+        Blocks[0].tailSeg = (Segment*)malloc(sizeof(Segment)); //Instantiate root segment
+        Blocks[0].tailSeg->numFrames = 0;
+        Blocks[0].tailSeg->parent = NULL;
+        Blocks[0].tailSeg->refCount = 0;
+        Blocks[0].tailSeg->depth = 1;
+        HashTab[findNewHashInx(HashTab, config.MaxHashes, Blocks[0].pos)] = 0;
+
+        // Synchronize global state
+        gState.AllSegments[gState.NSegments[Id] + Id * config.MaxLocalSegments] = Blocks[0].tailSeg;
+        gState.NSegments[Id]++;
+        gState.NBlocks[Id]++;
+    }
+
+    void SelectBaseBlock(GlobalState& gState)
+    {
+
+    }
+};
+
+/*
+void ProcessNewBlock(Configuration& config, GlobalState& gState, int tid, Block& prevBlock, Vec3d newPos, float newFitness)
+{
+    Block newBlock;
+
+    // Create and add block to list.
+    if (gState.NBlocks[tid] == config.MaxBlocks) {
+        printf("Max local blocks reached!\n");
+    }
+    else {
+        //UPDATED FOR SEGMENTS STRUCT
+        newBlock = prevBlock;
+        newBlock.pos = newPos;
+        newBlock.value = newFitness;
+        int blInxLocal = findBlock(blocks, hashTab, config.MaxHashes, newPos, 0, gState.NBlocks[tid]);
+        blInx = findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, newPos, 0, gState.NBlocks[config.TotalThreads]);
+
+        if (blInxLocal < gState.NBlocks[tid]) { // Existing local block.
+            if (newBlock.value >= blocks[blInxLocal].value) {
+                Segment* newSeg = (Segment*)malloc(sizeof(Segment));
+                newSeg->parent = origBlock.tailSeg;
+                newSeg->refCount = 0;
+                newSeg->numFrames = f + 1;
+                newSeg->seed = origSeed;
+                newSeg->depth = origBlock.tailSeg->depth + 1;
+                if (newSeg->depth == 0) { printf("newSeg depth is 0!\n"); }
+                if (origBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
+                newBlock.tailSeg = newSeg;
+                gState.AllSegments[tid * config.MaxLocalSegments + gState.NSegments[tid]] = newSeg;
+                gState.NSegments[tid] += 1;
+                blocks[blInxLocal] = newBlock;
+            }
+        }
+        else if (blInx < gState.NBlocks[config.TotalThreads] && newBlock.value < gState.SharedBlocks[blInx].value);// Existing shared block but worse.
+        else { // Existing shared block and better OR completely new block.
+            hashTab[findNewHashInx(hashTab, config.MaxHashes, newPos)] = gState.NBlocks[tid];
+            Segment* newSeg = (Segment*)malloc(sizeof(Segment));
+            newSeg->parent = origBlock.tailSeg;
+            newSeg->refCount = 1;
+            newSeg->numFrames = f + 1;
+            newSeg->seed = origSeed;
+            newSeg->depth = origBlock.tailSeg->depth + 1;
+            if (newSeg->depth == 0) { printf("newSeg depth is 0!\n"); }
+            if (origBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
+            newBlock.tailSeg = newSeg;
+            gState.AllSegments[tid * config.MaxLocalSegments + gState.NSegments[tid]] = newSeg;
+            gState.NSegments[tid] += 1;
+            blocks[gState.NBlocks[tid]++] = newBlock;
+        }
+    }
+}
+*/
+
 void main(int argc, char* argv[]) {
     ParseArgs(argc, argv);
 
@@ -889,12 +987,12 @@ void main(int argc, char* argv[]) {
     omp_set_num_threads(config.TotalThreads);
     #pragma omp parallel
     {
-        int tid = omp_get_thread_num();
-        printf("Thread %d\n", tid);
+        ThreadState tState = ThreadState(config, gState, omp_get_thread_num());
+        printf("Thread %d\n", tState.Id);
 
         //TODO: revert hardcoding
         LPCWSTR dlls[4] = {L"sm64_jp_0.dll", L"sm64_jp_1.dll" , L"sm64_jp_2.dll" , L"sm64_jp_3.dll" };
-        HMODULE hDLL = LoadLibrary(dlls[tid]);
+        HMODULE hDLL = LoadLibrary(dlls[tState.Id]);
 
         // Functions
         VOIDFUNC sm64_init = (VOIDFUNC)GetProcAddress(hDLL, "sm64_init");
@@ -949,10 +1047,9 @@ void main(int argc, char* argv[]) {
 
         int printingDRLand = 1;
 
-        uint64_t seed = (uint64_t)(tid + 173) * 5786766484692217813;
+        uint64_t seed = (uint64_t)(tState.Id + 173) * 5786766484692217813;
         //uint64_t seed = (uint64_t)(tid + 173) * time(NULL);
         double timerStart, loadTime = 0, runTime = 0, blockTime = 0;
-
 
         // Read inputs from file
         Input* fileInputs = GetM64("C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64");
@@ -960,12 +1057,6 @@ void main(int argc, char* argv[]) {
         // Run the inputs.
         int startCourse = 0, startArea = 0;
         Input* m64short = (Input*)malloc(sizeof(Input) * (config.SegmentLength * config.MaxSegments + 256)); // Todo: Nasty
-        Block* blocks = gState.AllBlocks + tid * config.MaxBlocks;
-        int* hashTab = gState.AllHashTabs + tid * config.MaxHashes;
-        for (int hashInx = 0; hashInx < config.MaxHashes; hashInx++) hashTab[hashInx] = -1; // Init local hash table.
-        if (tid == 0) {
-            for (int hashInx = 0; hashInx < config.MaxSharedHashes; hashInx++) gState.SharedHashTab[hashInx] = -1; // Init shared hash table.
-        }
 
         int maxLightning = 10000;
         int lightLen = 0;
@@ -975,20 +1066,11 @@ void main(int argc, char* argv[]) {
         SaveState state, state2;
         allocState(&state);
         allocState(&state2);
-        //allocState(xorSlaves + tid);
 
         Input in;
         for (int f = 0; f < config.StartFrame + 5; f++) {
             *gControllerPads = in = fileInputs[f];
             sm64_update();
-            //if(f > startFrame - 200){
-                //for(int off = 0; off < 1000; off += 2){
-                    //float *tentativeHeight = (float *)((char *)gMarioStates + off);
-                    //if(*tentativeHeight == -3071.0){
-                    //	printf("%d %d %f\n", f, off, *tentativeHeight);
-                    //}
-                //}
-            //}
             if (f == config.StartFrame - 1) save(hDLL, &state);
             if (f == config.StartFrame - 1) {
                 startCourse = *gCurrCourseNum;
@@ -996,23 +1078,13 @@ void main(int argc, char* argv[]) {
             }
         }
 
-        //int* gTimer = (int*)GetProcAddress(hDLL, "gGlobalTimer");
-        printf("%f\n", *marioY);
         // Give info to the root block.
-        //load(hDLL, &state);
-        //riskyLoad(hDLL, &state);
         riskyLoadJ(hDLL, &state);
-        blocks[0].pos = truncFunc(*marioX, *marioY, *marioZ, *marioAction, *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown, *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel); //CHEAT TODO NOTE
-        blocks[0].tailSeg = (Segment*)malloc(sizeof(Segment)); //Instantiate root segment
-        blocks[0].tailSeg->numFrames = 0;
-        blocks[0].tailSeg->parent = NULL;
-        blocks[0].tailSeg->refCount = 0;
-        blocks[0].tailSeg->depth = 1;
-        gState.AllSegments[gState.NSegments[tid] + tid * config.MaxLocalSegments] = blocks[0].tailSeg;
-        //printf("%d\n", numSegs[tid] + tid*maxLocalSegs);
-        gState.NSegments[tid]++;
-        hashTab[findNewHashInx(hashTab, config.MaxHashes, blocks[0].pos)] = 0;
-        gState.NBlocks[tid]++;
+        Vec3d initTruncPos = truncFunc(*marioX, *marioY, *marioZ, *marioAction,
+            *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown,
+            *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel);
+
+        tState.Initialize(config, gState, initTruncPos);
 
         double pureStart = omp_get_wtime();
 
@@ -1025,7 +1097,7 @@ void main(int argc, char* argv[]) {
             if (mainLoop % 300 == 0) {
                 //if (mainLoop % 5 == 0) {
                 #pragma omp barrier
-                if (tid == 0) {
+                if (tState.Id == 0) {
                     // Merge all blocks from all threads and redistribute info.
                     MergeBlocks(config, gState);
 
@@ -1243,7 +1315,7 @@ void main(int argc, char* argv[]) {
                         *marioX + *marioZ > (-1945 - 715)) {  //make sure Mario is going toward the right/east edge
                         char fileName[128];
                         //printf("dr\n");
-                        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\dr\\bitfs_dr_%f_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel, tid);
+                        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\dr\\bitfs_dr_%f_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel, tState.Id);
                         writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64short, config.StartFrame, trueF + f + 1);
                     }
                     //check on hspd > 1 confirms we're in dr land rather than quickstopping,
@@ -1252,7 +1324,7 @@ void main(int argc, char* argv[]) {
                         && fabs(*pyraXNorm) > .29 && fabs(*marioX) > -1680) {
                         char fileName[128];
                         //if(printingDRLand > 0)printf("dr land\n");
-                        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\drland\\bitfs_drland_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, tid);
+                        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\drland\\bitfs_drland_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, tState.Id);
                         writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64short, config.StartFrame, trueF + f + 1);
                     }
 
@@ -1270,7 +1342,7 @@ void main(int argc, char* argv[]) {
                     if (actionTrunc < 0xC0 && !truncEq(newPos, oldPos) && !truncEq(newPos, origPos)) {
 
                         // Create and add block to list.
-                        if (gState.NBlocks[tid] == config.MaxBlocks) {
+                        if (gState.NBlocks[tState.Id] == config.MaxBlocks) {
                             printf("Max local blocks reached!\n");
                         }
                         else {
@@ -1278,11 +1350,11 @@ void main(int argc, char* argv[]) {
                             newBlock = origBlock;
                             newBlock.pos = newPos;
                             newBlock.value = -fabs(*pyraYNorm);
-                            int blInxLocal = findBlock(blocks, hashTab, config.MaxHashes, newPos, 0, gState.NBlocks[tid]);
+                            int blInxLocal = findBlock(tState.Blocks, tState.HashTab, config.MaxHashes, newPos, 0, gState.NBlocks[tState.Id]);
                             blInx = findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, newPos, 0, gState.NBlocks[config.TotalThreads]);
 
-                            if (blInxLocal < gState.NBlocks[tid]) { // Existing local block.
-                                if (newBlock.value >= blocks[blInxLocal].value) {
+                            if (blInxLocal < gState.NBlocks[tState.Id]) { // Existing local block.
+                                if (newBlock.value >= tState.Blocks[blInxLocal].value) {
                                     Segment* newSeg = (Segment*)malloc(sizeof(Segment));
                                     newSeg->parent = origBlock.tailSeg;
                                     newSeg->refCount = 0;
@@ -1292,14 +1364,14 @@ void main(int argc, char* argv[]) {
                                     if (newSeg->depth == 0) { printf("newSeg depth is 0!\n"); }
                                     if (origBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
                                     newBlock.tailSeg = newSeg;
-                                    gState.AllSegments[tid * config.MaxLocalSegments + gState.NSegments[tid]] = newSeg;
-                                    gState.NSegments[tid] += 1;
-                                    blocks[blInxLocal] = newBlock;
+                                    gState.AllSegments[tState.Id * config.MaxLocalSegments + gState.NSegments[tState.Id]] = newSeg;
+                                    gState.NSegments[tState.Id] += 1;
+                                    tState.Blocks[blInxLocal] = newBlock;
                                 }
                             }
                             else if (blInx < gState.NBlocks[config.TotalThreads] && newBlock.value < gState.SharedBlocks[blInx].value);// Existing shared block but worse.
                             else { // Existing shared block and better OR completely new block.
-                                hashTab[findNewHashInx(hashTab, config.MaxHashes, newPos)] = gState.NBlocks[tid];
+                                tState.HashTab[findNewHashInx(tState.HashTab, config.MaxHashes, newPos)] = gState.NBlocks[tState.Id];
                                 Segment* newSeg = (Segment*)malloc(sizeof(Segment));
                                 newSeg->parent = origBlock.tailSeg;
                                 newSeg->refCount = 1;
@@ -1309,9 +1381,9 @@ void main(int argc, char* argv[]) {
                                 if (newSeg->depth == 0) { printf("newSeg depth is 0!\n"); }
                                 if (origBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
                                 newBlock.tailSeg = newSeg;
-                                gState.AllSegments[tid * config.MaxLocalSegments + gState.NSegments[tid]] = newSeg;
-                                gState.NSegments[tid] += 1;
-                                blocks[gState.NBlocks[tid]++] = newBlock;
+                                gState.AllSegments[tState.Id * config.MaxLocalSegments + gState.NSegments[tState.Id]] = newSeg;
+                                gState.NSegments[tState.Id] += 1;
+                                tState.Blocks[gState.NBlocks[tState.Id]++] = newBlock;
                             }
                         }
                         oldPos = newPos; // TTODO: Why this here?
