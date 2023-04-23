@@ -741,6 +741,7 @@ public:
     int TotalThreads;
     int MaxSharedSegments;
     int MaxLocalSegments;
+    int MaxLightningLength;
 };
 
 class GlobalState
@@ -782,6 +783,7 @@ void InitConfiguration(Configuration& configuration)
     configuration.TotalThreads = 4;
     configuration.MaxSharedSegments = 25000000;
     configuration.MaxLocalSegments = 2000000;
+    configuration.MaxLightningLength = 10000;
 }
 
 void MergeBlocks(Configuration& config, GlobalState& gState)
@@ -886,28 +888,48 @@ public:
     Block* Blocks;
     int* HashTab;
     int Id;
+    uint64_t RngSeed;
+
     Block BaseBlock;
+    Input CurrentInput;
+
+    // TODO: Unimplemented?
+    int LightningLength;
+    int LightningLengthLocal;
+    Vec3d* Lightning;
+    Vec3d* LightningLocal;
 
     ThreadState(Configuration& config, GlobalState& gState, int id)
     {
         Id = id;
         Blocks = gState.AllBlocks + Id * config.MaxBlocks;
         HashTab = gState.AllHashTabs + Id * config.MaxHashes;
+        RngSeed = (uint64_t)(Id + 173) * 5786766484692217813;
+
+        printf("Thread %d\n", Id);
     }
 
     void Initialize(Configuration& config, GlobalState& gState, Vec3d initTruncPos)
     {
-        // Init local hash table.
-        for (int hashInx = 0; hashInx < config.MaxHashes; hashInx++)
-            HashTab[hashInx] = -1; 
-
+        // Initial block
         Blocks[0].pos = initTruncPos; //CHEAT TODO NOTE
         Blocks[0].tailSeg = (Segment*)malloc(sizeof(Segment)); //Instantiate root segment
         Blocks[0].tailSeg->numFrames = 0;
         Blocks[0].tailSeg->parent = NULL;
         Blocks[0].tailSeg->refCount = 0;
         Blocks[0].tailSeg->depth = 1;
+
+        // Init local hash table.
+        for (int hashInx = 0; hashInx < config.MaxHashes; hashInx++)
+            HashTab[hashInx] = -1;
+
         HashTab[findNewHashInx(HashTab, config.MaxHashes, Blocks[0].pos)] = 0;
+
+        // Lightning
+        LightningLength = 0;
+        LightningLengthLocal = 0;
+        Lightning = (Vec3d*)malloc(sizeof(Vec3d) * config.MaxLightningLength);
+        LightningLocal = (Vec3d*)malloc(sizeof(Vec3d) * config.MaxLightningLength);
 
         // Synchronize global state
         gState.AllSegments[gState.NSegments[Id] + Id * config.MaxLocalSegments] = Blocks[0].tailSeg;
@@ -915,64 +937,119 @@ public:
         gState.NBlocks[Id]++;
     }
 
-    void SelectBaseBlock(GlobalState& gState)
+    bool SelectBaseBlock(Configuration& config, GlobalState& gState, int mainIteration)
     {
+        int origInx = gState.NBlocks[config.TotalThreads];
+        if (mainIteration % 15 == 0) {
+            origInx = 0;
+        }
+        else if (mainIteration % 7 == 1 && LightningLength > 0) {
+            for (int attempt = 0; attempt < 1000; attempt++) {
+                int randomLightInx = xoro_r(&RngSeed) % LightningLength;
+                origInx = findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, Lightning[randomLightInx], 0, gState.NBlocks[config.TotalThreads]);
+                if (origInx != gState.NBlocks[config.TotalThreads]) break;
+            }
+            if (origInx == gState.NBlocks[config.TotalThreads]) {
+                printf("Could not find lightning block, using root!\n");
+                origInx = 0;
+            }
+        }
+        else {
+            int weighted = xoro_r(&RngSeed) % 5;
+            for (int attempt = 0; attempt < 100000; attempt++) {
+                origInx = xoro_r(&RngSeed) % gState.NBlocks[config.TotalThreads];
+                if (gState.SharedBlocks[origInx].tailSeg == 0) { printf("Chosen block tailseg null!\n"); continue; }
+                if (gState.SharedBlocks[origInx].tailSeg->depth == 0) { printf("Chosen block tailseg depth 0!\n"); continue; }
+                uint64_t s = gState.SharedBlocks[origInx].pos.s;
+                int normInfo = s % 900;
+                float xNorm = (float)((int)normInfo / 30);
+                float zNorm = (float)(normInfo % 30);
+                float approxXZSum = fabs((xNorm - 15) / 15) + fabs((zNorm - 15) / 15) + .01;
+                if (((float)(xoro_r(&RngSeed) % 50) / 100 < approxXZSum * approxXZSum) & (gState.SharedBlocks[origInx].tailSeg->depth < config.MaxSegments)) break;
+            }
+            if (origInx == gState.NBlocks[config.TotalThreads]) {
+                printf("Could not find block!\n");
+                return false;
+            }
+        }
 
+        BaseBlock = gState.SharedBlocks[origInx];
+        if (BaseBlock.tailSeg->depth > config.MaxSegments + 2) { printf("BaseBlock depth above max!\n"); }
+        if (BaseBlock.tailSeg->depth == 0) { printf("BaseBlock depth is zero!\n"); }
+
+        return true;
     }
 };
 
-/*
-void ProcessNewBlock(Configuration& config, GlobalState& gState, int tid, Block& prevBlock, Vec3d newPos, float newFitness)
+void AdvanceToStart(Configuration& config, ThreadState& tState, SaveState& saveState, HMODULE& dll, Input* fileInputs)
+{
+    Input* gControllerPads = (Input*)GetProcAddress(dll, "gControllerPads");
+    VOIDFUNC sm64_update = (VOIDFUNC)GetProcAddress(dll, "sm64_update");
+
+    for (int f = 0; f < config.StartFrame + 5; f++) {
+        *gControllerPads = tState.CurrentInput = fileInputs[f];
+        sm64_update();
+        if (f == config.StartFrame - 1) save(dll, &saveState);
+    }
+}
+
+void ProcessNewBlock(Configuration& config, GlobalState& gState, ThreadState& tState, uint64_t prevRngSeed, int nFrames, Vec3d newPos, float newFitness)
 {
     Block newBlock;
 
     // Create and add block to list.
-    if (gState.NBlocks[tid] == config.MaxBlocks) {
+    if (gState.NBlocks[tState.Id] == config.MaxBlocks) {
         printf("Max local blocks reached!\n");
     }
     else {
         //UPDATED FOR SEGMENTS STRUCT
-        newBlock = prevBlock;
+        newBlock = tState.BaseBlock;
         newBlock.pos = newPos;
         newBlock.value = newFitness;
-        int blInxLocal = findBlock(blocks, hashTab, config.MaxHashes, newPos, 0, gState.NBlocks[tid]);
-        blInx = findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, newPos, 0, gState.NBlocks[config.TotalThreads]);
+        int blInxLocal = findBlock(tState.Blocks, tState.HashTab, config.MaxHashes, newPos, 0, gState.NBlocks[tState.Id]);
+        int blInx = findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, newPos, 0, gState.NBlocks[config.TotalThreads]);
 
-        if (blInxLocal < gState.NBlocks[tid]) { // Existing local block.
-            if (newBlock.value >= blocks[blInxLocal].value) {
+        if (blInxLocal < gState.NBlocks[tState.Id]) { // Existing local block.
+            if (newBlock.value >= tState.Blocks[blInxLocal].value) {
                 Segment* newSeg = (Segment*)malloc(sizeof(Segment));
-                newSeg->parent = origBlock.tailSeg;
+                newSeg->parent = tState.BaseBlock.tailSeg;
                 newSeg->refCount = 0;
-                newSeg->numFrames = f + 1;
-                newSeg->seed = origSeed;
-                newSeg->depth = origBlock.tailSeg->depth + 1;
+                newSeg->numFrames = nFrames + 1;
+                newSeg->seed = prevRngSeed;
+                newSeg->depth = tState.BaseBlock.tailSeg->depth + 1;
                 if (newSeg->depth == 0) { printf("newSeg depth is 0!\n"); }
-                if (origBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
+                if (tState.BaseBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
                 newBlock.tailSeg = newSeg;
-                gState.AllSegments[tid * config.MaxLocalSegments + gState.NSegments[tid]] = newSeg;
-                gState.NSegments[tid] += 1;
-                blocks[blInxLocal] = newBlock;
+                gState.AllSegments[tState.Id * config.MaxLocalSegments + gState.NSegments[tState.Id]] = newSeg;
+                gState.NSegments[tState.Id] += 1;
+                tState.Blocks[blInxLocal] = newBlock;
             }
         }
         else if (blInx < gState.NBlocks[config.TotalThreads] && newBlock.value < gState.SharedBlocks[blInx].value);// Existing shared block but worse.
         else { // Existing shared block and better OR completely new block.
-            hashTab[findNewHashInx(hashTab, config.MaxHashes, newPos)] = gState.NBlocks[tid];
+            tState.HashTab[findNewHashInx(tState.HashTab, config.MaxHashes, newPos)] = gState.NBlocks[tState.Id];
             Segment* newSeg = (Segment*)malloc(sizeof(Segment));
-            newSeg->parent = origBlock.tailSeg;
+            newSeg->parent = tState.BaseBlock.tailSeg;
             newSeg->refCount = 1;
-            newSeg->numFrames = f + 1;
-            newSeg->seed = origSeed;
-            newSeg->depth = origBlock.tailSeg->depth + 1;
+            newSeg->numFrames = nFrames + 1;
+            newSeg->seed = prevRngSeed;
+            newSeg->depth = tState.BaseBlock.tailSeg->depth + 1;
             if (newSeg->depth == 0) { printf("newSeg depth is 0!\n"); }
-            if (origBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
+            if (tState.BaseBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
             newBlock.tailSeg = newSeg;
-            gState.AllSegments[tid * config.MaxLocalSegments + gState.NSegments[tid]] = newSeg;
-            gState.NSegments[tid] += 1;
-            blocks[gState.NBlocks[tid]++] = newBlock;
+            gState.AllSegments[tState.Id * config.MaxLocalSegments + gState.NSegments[tState.Id]] = newSeg;
+            gState.NSegments[tState.Id] += 1;
+            tState.Blocks[gState.NBlocks[tState.Id]++] = newBlock;
         }
     }
 }
-*/
+
+void PrintStatus(Configuration& config, GlobalState& gState, int mainIteration, double loopStart, double loadTime, double runTime, double blockTime)
+{
+    printfQ("\nThread ALL Loop %d blocks %d\n", mainIteration, gState.NBlocks[config.TotalThreads]);
+    printfQ("LOAD %.3f RUN %.3f BLOCK %.3f TOTAL %.3f\n", loadTime, runTime, blockTime, omp_get_wtime() - loopStart);
+    printfQ("\n\n");
+}
 
 void main(int argc, char* argv[]) {
     ParseArgs(argc, argv);
@@ -988,7 +1065,6 @@ void main(int argc, char* argv[]) {
     #pragma omp parallel
     {
         ThreadState tState = ThreadState(config, gState, omp_get_thread_num());
-        printf("Thread %d\n", tState.Id);
 
         //TODO: revert hardcoding
         LPCWSTR dlls[4] = {L"sm64_jp_0.dll", L"sm64_jp_1.dll" , L"sm64_jp_2.dll" , L"sm64_jp_3.dll" };
@@ -1046,56 +1122,42 @@ void main(int argc, char* argv[]) {
         sm64_init();
 
         int printingDRLand = 1;
-
-        uint64_t seed = (uint64_t)(tState.Id + 173) * 5786766484692217813;
-        //uint64_t seed = (uint64_t)(tid + 173) * time(NULL);
+        
         double timerStart, loadTime = 0, runTime = 0, blockTime = 0;
 
         // Read inputs from file
         Input* fileInputs = GetM64("C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64");
 
-        // Run the inputs.
-        int startCourse = 0, startArea = 0;
-        Input* m64short = (Input*)malloc(sizeof(Input) * (config.SegmentLength * config.MaxSegments + 256)); // Todo: Nasty
-
-        int maxLightning = 10000;
-        int lightLen = 0;
-        Vec3d* lightningList = (Vec3d*)malloc(sizeof(Vec3d) * maxLightning);
-        Vec3d* lightningLocal = (Vec3d*)malloc(sizeof(Vec3d) * maxLightning);
+        Input* m64Diff = (Input*)malloc(sizeof(Input) * (config.SegmentLength * config.MaxSegments + 256)); // Todo: Nasty
 
         SaveState state, state2;
         allocState(&state);
         allocState(&state2);
 
-        Input in;
-        for (int f = 0; f < config.StartFrame + 5; f++) {
-            *gControllerPads = in = fileInputs[f];
-            sm64_update();
-            if (f == config.StartFrame - 1) save(hDLL, &state);
-            if (f == config.StartFrame - 1) {
-                startCourse = *gCurrCourseNum;
-                startArea = *gCurrAreaIndex;
-            }
-        }
+        // Run the inputs.
+        AdvanceToStart(config, tState, state, hDLL, fileInputs);
 
-        // Give info to the root block.
         riskyLoadJ(hDLL, &state);
+
         Vec3d initTruncPos = truncFunc(*marioX, *marioY, *marioZ, *marioAction,
             *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown,
             *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel);
 
+        // Give info to the root block.
         tState.Initialize(config, gState, initTruncPos);
+
+        int startCourse = *gCurrCourseNum;
+        int startArea = *gCurrAreaIndex;
 
         double pureStart = omp_get_wtime();
 
         for (int mainLoop = 0; mainLoop <= 1000000000; mainLoop++) {
-            int blInx, seg, trueF, origInx;
-            Block origBlock, newBlock;
+            int seg, trueF, origInx;
+            Block newBlock;
             uint64_t tmpSeed;
 
             // ALWAYS START WITH A MERGE SO THE SHARED BLOCKS ARE OK.
             if (mainLoop % 300 == 0) {
-                //if (mainLoop % 5 == 0) {
                 #pragma omp barrier
                 if (tState.Id == 0) {
                     // Merge all blocks from all threads and redistribute info.
@@ -1107,73 +1169,35 @@ void main(int argc, char* argv[]) {
                     if (mainLoop % 3000 == 0) 
                         SegmentGarbageCollection(config, gState);
 
-                    printfQ("\nThread ALL Loop %d blocks %d\n", mainLoop, gState.NBlocks[config.TotalThreads]);
-                    printfQ("LOAD %.3f RUN %.3f BLOCK %.3f TOTAL %.3f\n", loadTime, runTime, blockTime, omp_get_wtime() - pureStart);
+                    PrintStatus(config, gState, mainLoop, pureStart, loadTime, runTime, blockTime);
+
                     pureStart = omp_get_wtime();
                     loadTime = runTime = blockTime = 0;
-                    printfQ("\n\n");
                 }
+
                 flushLog();
                 #pragma omp barrier
             }
 
             // Pick a block.
-            origInx = gState.NBlocks[config.TotalThreads];
-            if (mainLoop % 15 == 0) {
-                origInx = 0;
-            }
-            else if (mainLoop % 7 == 1 && lightLen > 0) {
-                for (int attempt = 0; attempt < 1000; attempt++) {
-                    int randomLightInx = xoro_r(&seed) % lightLen;
-                    origInx = findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, lightningList[randomLightInx], 0, gState.NBlocks[config.TotalThreads]);
-                    if (origInx != gState.NBlocks[config.TotalThreads]) break;
-                }
-                if (origInx == gState.NBlocks[config.TotalThreads]) {
-                    printf("Could not find lightning block, using root!\n");
-                    origInx = 0;
-                }
-            }
-            else {
-                int weighted = xoro_r(&seed) % 5;
-                for (int attempt = 0; attempt < 100000; attempt++) {
-                    origInx = xoro_r(&seed) % gState.NBlocks[config.TotalThreads];
-                    if (gState.SharedBlocks[origInx].tailSeg == 0) { printf("Chosen block tailseg null!\n"); continue; }
-                    if (gState.SharedBlocks[origInx].tailSeg->depth == 0) { printf("Chosen block tailseg depth 0!\n"); continue; }
-                    uint64_t s = gState.SharedBlocks[origInx].pos.s;
-                    int normInfo = s % 900;
-                    float xNorm = (float)((int)normInfo / 30);
-                    float zNorm = (float)(normInfo % 30);
-                    float approxXZSum = fabs((xNorm - 15) / 15) + fabs((zNorm - 15) / 15) + .01;
-                    if (((float)(xoro_r(&seed) % 50) / 100 < approxXZSum * approxXZSum) & (gState.SharedBlocks[origInx].tailSeg->depth < config.MaxSegments)) break;
-                }
-                if (origInx == gState.NBlocks[config.TotalThreads]) {
-                    printf("Could not find block!\n");
-                    break;
-                }
-            }
-
-            origBlock = gState.SharedBlocks[origInx];
-            if (origBlock.tailSeg->depth > config.MaxSegments + 2) { printf("origBlock depth above max!\n"); }
-            if (origBlock.tailSeg->depth == 0) { printf("origBlock depth is zero!\n"); }
+            if (!tState.SelectBaseBlock(config, gState, mainLoop))
+                break;
 
             // Create a state for this block.
-            //load(hDLL, &state);
-            //riskyLoad(hDLL, &state);
             riskyLoadJ(hDLL, &state);
-            //riskyLoad2(hDLL, &state);
             trueF = 0;
 
-            int lightLenLocal = 0;
             Vec3d newPos = truncFunc(*marioX, *marioY, *marioZ, *marioAction, *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown, *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel);
-            lightningLocal[lightLenLocal++] = newPos;
+            tState.LightningLocal[tState.LightningLengthLocal++] = newPos;
 
             //UPDATED FOR SEGMENTS STRUCT
             //Before, I temporarily reversed the linked list.
             //But this doesn't work in a multi threaded environment.
             //Punt and do this in quadratic time. This shouldn't be a
             //bottleneck anyway but can fix it if needed
-            if (origBlock.tailSeg == 0)printf("origBlock has null tailSeg");
-            Segment* thisTailSeg = origBlock.tailSeg;
+            if (tState.BaseBlock.tailSeg == 0)
+                printf("origBlock has null tailSeg");
+            Segment* thisTailSeg = tState.BaseBlock.tailSeg;
             Segment* curSeg;
             int thisSegDepth = thisTailSeg->depth;
             float prevXZSums[sumFramesBack];
@@ -1184,18 +1208,22 @@ void main(int argc, char* argv[]) {
             for (int i = 1; i <= thisSegDepth; i++) {
                 curSeg = thisTailSeg;
                 while (curSeg->depth != i) {  //inefficient but probably doesn't matter
-                    if (curSeg->parent == 0)printf("Parent is null!");
+                    if (curSeg->parent == 0)
+                        printf("Parent is null!");
                     if (curSeg->parent->depth + 1 != curSeg->depth) { printf("Depths wrong"); }
                     curSeg = curSeg->parent;
                 }
+
                 //Run the inputs
                 tmpSeed = curSeg->seed;
                 int megaRandom = xoro_r(&tmpSeed) % 2;
                 for (int f = 0; f < curSeg->numFrames; f++) {
-                    perturbInput(&in, &tmpSeed, trueF, *marioAction, *marioYawFacing, *pyraXNorm, *pyraZNorm, *marioHSpd, *camYaw, megaRandom);
-                    m64short[trueF++] = in;
-                    *gControllerPads = in;
+                    perturbInput(&tState.CurrentInput, &tmpSeed, trueF, *marioAction, *marioYawFacing, *pyraXNorm, *pyraZNorm, *marioHSpd, *camYaw, megaRandom);
+                    m64Diff[trueF++] = tState.CurrentInput;
+                    *gControllerPads = tState.CurrentInput;
+
                     sm64_update();
+                    
                     //updateValue(&value);
                     float xzSum = fabs(*pyraXNorm) + fabs(*pyraZNorm);
                     for (int prevXZSumInd = 0; prevXZSumInd < sumFramesBack - 1; prevXZSumInd++) {
@@ -1209,10 +1237,11 @@ void main(int argc, char* argv[]) {
                         prevXZSums[sumFramesBack - 1] = xzSum;
                         prevHSpds[sumFramesBack - 1] = *marioHSpd;
                     }
+
                     newPos = truncFunc(*marioX, *marioY, *marioZ, *marioAction, *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown, *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel);
-                    if (!truncEq(newPos, lightningLocal[lightLenLocal - 1])) {
-                        if (lightLenLocal < maxLightning) {
-                            lightningLocal[lightLenLocal++] = newPos;
+                    if (!truncEq(newPos, tState.LightningLocal[tState.LightningLengthLocal - 1])) {
+                        if (tState.LightningLengthLocal < config.MaxLightningLength) {
+                            tState.LightningLocal[tState.LightningLengthLocal++] = newPos;
                         }
                         else {
                             printf("Reached max lightning!\n");
@@ -1223,13 +1252,14 @@ void main(int argc, char* argv[]) {
 
             save(hDLL, &state2);
             //xorStates(&state, &state2, xorSlaves + tid, tid);
-            Input origLastIn = in;
+            Input origLastIn = tState.CurrentInput;
             Vec3d origPos = truncFunc(*marioX, *marioY, *marioZ, *marioAction, *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown, *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel);
             //int   origValue = value;
-            int   origLightLenLocal = lightLenLocal;
-            if (!truncEq(origBlock.pos, origPos)) {
-                printf("ORIG %d %d %d %ld AND BLOCK %d %d %d %ld NOT EQUAL\n", origPos.x, origPos.y, origPos.z, origPos.s, origBlock.pos.x, origBlock.pos.y, origBlock.pos.z, origBlock.pos.s);
-                Segment* curSegDebug = origBlock.tailSeg;
+            int origLightLenLocal = tState.LightningLengthLocal;
+            if (!truncEq(tState.BaseBlock.pos, origPos)) {
+                printf("ORIG %d %d %d %ld AND BLOCK %d %d %d %ld NOT EQUAL\n", origPos.x, origPos.y, origPos.z, origPos.s,
+                    tState.BaseBlock.pos.x, tState.BaseBlock.pos.y, tState.BaseBlock.pos.z, tState.BaseBlock.pos.s);
+                Segment* curSegDebug = tState.BaseBlock.tailSeg;
                 while (curSegDebug != 0) {  //inefficient but probably doesn't matter
                     if (curSegDebug->parent == 0)printf("Parent is null!");
                     if (curSegDebug->parent->depth + 1 != curSegDebug->depth) { printf("Depths wrong"); }
@@ -1242,34 +1272,31 @@ void main(int argc, char* argv[]) {
             if (mainLoop == 0) subLoopMax = 200;
             for (int subLoop = 0; subLoop < subLoopMax; subLoop++) {
                 float finishTime = 0.0;
-                //int newBigBoy = 0;
                 Vec3d oldPos;
-                uint64_t origSeed = seed;
-                timerStart = omp_get_wtime();
-                //load(hDLL, &state2);
-                //riskyLoad(hDLL, &state2);
-                riskyLoadJ(hDLL, &state2);
-                //riskyLoad2(hDLL, &state2);
-                loadTime += omp_get_wtime() - timerStart;
-                oldPos = origPos;
-                in = origLastIn;
-                lightLenLocal = origLightLenLocal;
+                uint64_t origSeed = tState.RngSeed;
 
-                int megaRandom = xoro_r(&seed) % 2;
+                timerStart = omp_get_wtime();
+                riskyLoadJ(hDLL, &state2);
+                loadTime += omp_get_wtime() - timerStart;
+
+                oldPos = origPos;
+                tState.CurrentInput = origLastIn;
+                tState.LightningLengthLocal = origLightLenLocal;
+
+                int megaRandom = xoro_r(&tState.RngSeed) % 2;
 
                 int maxRun = config.SegmentLength;
                 for (int f = 0; f < maxRun; f++) {
-                    perturbInput(&in, &seed, trueF + f, *marioAction, *marioYawFacing, *pyraXNorm, *pyraZNorm, *marioHSpd, *camYaw, megaRandom);
-                    m64short[trueF + f] = in;
-                    *gControllerPads = in;
+                    perturbInput(&tState.CurrentInput, &tState.RngSeed, trueF + f, *marioAction, *marioYawFacing, *pyraXNorm, *pyraZNorm, *marioHSpd, *camYaw, megaRandom);
+                    m64Diff[trueF + f] = tState.CurrentInput;
+                    *gControllerPads = tState.CurrentInput;
+
                     timerStart = omp_get_wtime();
                     sm64_update();
                     runTime += omp_get_wtime() - timerStart;
 
                     unsigned int actionTrunc = *marioAction & 0x1FF;
                     newPos = truncFunc(*marioX, *marioY, *marioZ, *marioAction, *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown, *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel);
-
-                    //if ((*gTimeStopState || actionTrunc == 0x104) && maxRun < 200) maxRun++;
 
                     if (*gCurrCourseNum != startCourse || *gCurrAreaIndex != startArea) break;
 
@@ -1287,10 +1314,6 @@ void main(int argc, char* argv[]) {
                         prevXZSums[sumFramesBack - 1] = xzSum;
                         prevHSpds[sumFramesBack - 1] = *marioHSpd;
                     }
-                    //printf("%f %f\n", *pyraXNorm, *pyraZNorm);
-                    //printf("%f %f\n", xzSum, bestTimes[tid][0]);
-
-
 
                     if (*marioX < -2330) break;
                     if (*marioX > -1550) break;
@@ -1309,15 +1332,14 @@ void main(int argc, char* argv[]) {
                         *marioYVel != 22.0) break;//above pyra by over 4 units
                     if (*marioFloorHeight == -3071 && actionTrunc != ACT_FREEFALL) break; //diving/dring above lava
 
-
-
                     if (actionTrunc == ACT_DR && fabs(*pyraXNorm) > .3 && fabs(*pyraXNorm) + fabs(*pyraZNorm) > .65 &&
                         *marioX + *marioZ > (-1945 - 715)) {  //make sure Mario is going toward the right/east edge
                         char fileName[128];
                         //printf("dr\n");
                         sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\dr\\bitfs_dr_%f_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel, tState.Id);
-                        writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64short, config.StartFrame, trueF + f + 1);
+                        writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, trueF + f + 1);
                     }
+
                     //check on hspd > 1 confirms we're in dr land rather than quickstopping,
                     //which gives the same action
                     if (actionTrunc == ACT_DR_LAND && *marioY > -2980 && *marioHSpd > 1
@@ -1325,12 +1347,12 @@ void main(int argc, char* argv[]) {
                         char fileName[128];
                         //if(printingDRLand > 0)printf("dr land\n");
                         sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\drland\\bitfs_drland_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, tState.Id);
-                        writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64short, config.StartFrame, trueF + f + 1);
+                        writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, trueF + f + 1);
                     }
 
-                    if (!truncEq(newPos, lightningLocal[lightLenLocal - 1])) {
-                        if (lightLenLocal < maxLightning) {
-                            lightningLocal[lightLenLocal++] = newPos;
+                    if (!truncEq(newPos, tState.LightningLocal[tState.LightningLengthLocal - 1])) {
+                        if (tState.LightningLengthLocal < config.MaxLightningLength) {
+                            tState.LightningLocal[tState.LightningLengthLocal++] = newPos;
                         }
                         else {
                             printf("Reached max lightning!\n");
@@ -1339,53 +1361,11 @@ void main(int argc, char* argv[]) {
 
                     //fifd: Checks to see if we're in a new Block. If so, save off the segment so far.
                     timerStart = omp_get_wtime();
-                    if (actionTrunc < 0xC0 && !truncEq(newPos, oldPos) && !truncEq(newPos, origPos)) {
-
+                    if (actionTrunc < 0xC0 && !truncEq(newPos, oldPos) && !truncEq(newPos, origPos))
+                    {
                         // Create and add block to list.
-                        if (gState.NBlocks[tState.Id] == config.MaxBlocks) {
-                            printf("Max local blocks reached!\n");
-                        }
-                        else {
-                            //UPDATED FOR SEGMENTS STRUCT
-                            newBlock = origBlock;
-                            newBlock.pos = newPos;
-                            newBlock.value = -fabs(*pyraYNorm);
-                            int blInxLocal = findBlock(tState.Blocks, tState.HashTab, config.MaxHashes, newPos, 0, gState.NBlocks[tState.Id]);
-                            blInx = findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, newPos, 0, gState.NBlocks[config.TotalThreads]);
-
-                            if (blInxLocal < gState.NBlocks[tState.Id]) { // Existing local block.
-                                if (newBlock.value >= tState.Blocks[blInxLocal].value) {
-                                    Segment* newSeg = (Segment*)malloc(sizeof(Segment));
-                                    newSeg->parent = origBlock.tailSeg;
-                                    newSeg->refCount = 0;
-                                    newSeg->numFrames = f + 1;
-                                    newSeg->seed = origSeed;
-                                    newSeg->depth = origBlock.tailSeg->depth + 1;
-                                    if (newSeg->depth == 0) { printf("newSeg depth is 0!\n"); }
-                                    if (origBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
-                                    newBlock.tailSeg = newSeg;
-                                    gState.AllSegments[tState.Id * config.MaxLocalSegments + gState.NSegments[tState.Id]] = newSeg;
-                                    gState.NSegments[tState.Id] += 1;
-                                    tState.Blocks[blInxLocal] = newBlock;
-                                }
-                            }
-                            else if (blInx < gState.NBlocks[config.TotalThreads] && newBlock.value < gState.SharedBlocks[blInx].value);// Existing shared block but worse.
-                            else { // Existing shared block and better OR completely new block.
-                                tState.HashTab[findNewHashInx(tState.HashTab, config.MaxHashes, newPos)] = gState.NBlocks[tState.Id];
-                                Segment* newSeg = (Segment*)malloc(sizeof(Segment));
-                                newSeg->parent = origBlock.tailSeg;
-                                newSeg->refCount = 1;
-                                newSeg->numFrames = f + 1;
-                                newSeg->seed = origSeed;
-                                newSeg->depth = origBlock.tailSeg->depth + 1;
-                                if (newSeg->depth == 0) { printf("newSeg depth is 0!\n"); }
-                                if (origBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
-                                newBlock.tailSeg = newSeg;
-                                gState.AllSegments[tState.Id * config.MaxLocalSegments + gState.NSegments[tState.Id]] = newSeg;
-                                gState.NSegments[tState.Id] += 1;
-                                tState.Blocks[gState.NBlocks[tState.Id]++] = newBlock;
-                            }
-                        }
+                        ProcessNewBlock(config, gState, tState, origSeed, f, newPos, -fabs(*pyraYNorm));
+                        
                         oldPos = newPos; // TTODO: Why this here?
                     }
                     blockTime += omp_get_wtime() - timerStart;
