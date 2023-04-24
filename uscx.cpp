@@ -368,9 +368,22 @@ void copyDll(char* newFile, char* base) {
 
 //fifd: Where new inputs to try are actually produced
 //I think this is a perturbation of the previous frame's input to be used for the upcoming frame
-void perturbInput(Input* in, uint64_t* seed, int frame, unsigned int marioAction,
-    uint16_t marioYawFacing, float pyraXNorm, float pyraZNorm, float marioHSpd,
-    uint16_t camYaw, int megaRandom) {
+void perturbInput(HMODULE& dll, Input* in, uint64_t* seed, int frame, int megaRandom) {
+    void* gMarioStates = GetProcAddress(dll, "gMarioStates");
+    void* gObjectPool = GetProcAddress(dll, "gObjectPool");
+    void* gCamera = GetProcAddress(dll, "gCamera");
+
+    float* x = (float*)((char*)gMarioStates + 60);
+    float* y = (float*)((char*)gMarioStates + 64);
+    float* z = (float*)((char*)gMarioStates + 68);
+    unsigned int* marioAction = (unsigned int*)((char*)gMarioStates + 12);
+    uint16_t* marioYawFacing = (uint16_t*)((char*)gMarioStates + 46);
+    float* marioHSpd = (float*)((char*)gMarioStates + 0x54);
+    uint16_t* camYaw = (uint16_t*)((char*)gCamera + 340);
+
+    float* pyraXNorm = (float*)((char*)gObjectPool + 84 * 1392 + 324);
+    float* pyraZNorm = (float*)((char*)gObjectPool + 84 * 1392 + 332);
+
     if (frame == 0) in->x = in->y = in->b = 0;
 
     if ((in->b & CONT_DDOWN) != 0) { //on first frame of pause buffer
@@ -397,7 +410,7 @@ void perturbInput(Input* in, uint64_t* seed, int frame, unsigned int marioAction
     //int doZ = (in->b & CONT_G) != 0;
     //int doC = (in->b & CONT_E) != 0;
 
-    unsigned int actTrunc = marioAction & 0x1FF;
+    unsigned int actTrunc = *marioAction & 0x1FF;
 
     //fifd: Inverses of probabilities with which we toggle button statuses
     //or, in the case of jFact, joystick inputs
@@ -421,7 +434,7 @@ void perturbInput(Input* in, uint64_t* seed, int frame, unsigned int marioAction
     }
 
     if (actTrunc == ACT_DR_LAND) {
-        if (marioHSpd > 0) {
+        if (*marioHSpd > 0) {
             in->b = 0;
             in->x = 0;
             in->y = 0;
@@ -443,17 +456,17 @@ void perturbInput(Input* in, uint64_t* seed, int frame, unsigned int marioAction
         else if (choice == 1) { //fifd: with probability 1/3, go as close as we can to barely downhill
             int downhillAngle = 0;
             if (pyraZNorm != 0) {
-                downhillAngle = ((int)(atan(pyraXNorm / pyraZNorm) * 32768.0 / M_PI)) % 65536;
+                downhillAngle = ((int)(atan(*pyraXNorm / *pyraZNorm) * 32768.0 / M_PI)) % 65536;
             }
             int lefthillAngle = downhillAngle - 16384;
             int righthillAngle = downhillAngle + 16384;
-            int lefthillDiff = marioYawFacing - lefthillAngle;
-            int tarAng = (int)marioYawFacing - (int)camYaw;
+            int lefthillDiff = *marioYawFacing - lefthillAngle;
+            int tarAng = (int)*marioYawFacing - (int)*camYaw;
             if (abs(lefthillDiff + 65536 * 2) % 65536 < 16384 || abs(lefthillDiff + 65536 * 2) % 65536 > 49152) {
-                tarAng = (int)lefthillAngle - (int)camYaw + (xoro_r(seed) % 80 - 70);
+                tarAng = (int)lefthillAngle - (int)*camYaw + (xoro_r(seed) % 80 - 70);
             }
             else {
-                tarAng = (int)righthillAngle - (int)camYaw + (xoro_r(seed) % 80 - 10);
+                tarAng = (int)righthillAngle - (int)*camYaw + (xoro_r(seed) % 80 - 10);
             }
             float tarRad = tarAng * M_PI / 32768.0;
             float tarX = 100 * sin(tarRad);
@@ -466,7 +479,7 @@ void perturbInput(Input* in, uint64_t* seed, int frame, unsigned int marioAction
             in->y = round(tarY);
         }
         else if (choice == 2) { //match yaw
-            int tarAng = (int)marioYawFacing - (int)camYaw;
+            int tarAng = (int)*marioYawFacing - (int)*camYaw;
             float tarRad = tarAng * M_PI / 32768.0;
             float tarX = 100 * sin(tarRad);
             float tarY = -100 * cos(tarRad);
@@ -482,16 +495,16 @@ void perturbInput(Input* in, uint64_t* seed, int frame, unsigned int marioAction
 
     int downhillAngle = 0;
     if (pyraZNorm != 0) {
-        downhillAngle = ((int)(atan(pyraXNorm / pyraZNorm) * 32768.0 / M_PI)) % 65536;
+        downhillAngle = ((int)(atan(*pyraXNorm / *pyraZNorm) * 32768.0 / M_PI)) % 65536;
     }
-    int uphillDiff = (marioYawFacing - downhillAngle + 32768 + 65536 * 2) % 65536;
+    int uphillDiff = (*marioYawFacing - downhillAngle + 32768 + 65536 * 2) % 65536;
     //check for pbdr conditions
-    if (fabs(pyraXNorm) + fabs(pyraZNorm) > .6 && marioHSpd >= 29.0 &&
+    if (fabs(*pyraXNorm) + fabs(*pyraZNorm) > .6 && *marioHSpd >= 29.0 &&
         (uphillDiff < 6000 || uphillDiff > 59536) && xoro_r(seed) % 5 < 4 &&
         actTrunc == ACT_WALK) {
         //printf("did this\n");
         //printf("%f %f %f %d \n", pyraXNorm, pyraZNorm, marioHSpd, uphillDiff);
-        int tarAng = (int)marioYawFacing - (int)camYaw + xoro_r(seed) % 14000 - 7000;
+        int tarAng = (int)*marioYawFacing - (int)*camYaw + xoro_r(seed) % 14000 - 7000;
         float tarRad = tarAng * M_PI / 32768.0;
         float tarX = 100 * sin(tarRad);
         float tarY = -100 * cos(tarRad);
@@ -531,10 +544,35 @@ void perturbInput(Input* in, uint64_t* seed, int frame, unsigned int marioAction
 //output has 3 spatial coordinates (which cube in space Mario is in) and a variable called
 //s, which contains information about the action, button presses, camera mode,
 //hspd, and yaw
-Vec3d truncFunc(float x, float y, float z, unsigned int marioAction, float marioHSpd, unsigned short marioYawFacing, unsigned short controlButDown, float bullyX, float bullyZ, uint8_t camMode,
-    float pyraXNorm, float pyraYNorm, float pyraZNorm, float marioYVel) {
+Vec3d truncFunc(HMODULE& dll)
+{
+    void* gMarioStates = GetProcAddress(dll, "gMarioStates");
+    void* gObjectPool = GetProcAddress(dll, "gObjectPool");
+    void* gCamera = GetProcAddress(dll, "gCamera");
+    void* gControllers = (void*)GetProcAddress(dll, "gControllers");
+
+    float* x = (float*)((char*)gMarioStates + 60);
+    float* y = (float*)((char*)gMarioStates + 64);
+    float* z = (float*)((char*)gMarioStates + 68);
+    unsigned int* marioAction = (unsigned int*)((char*)gMarioStates + 12);
+    uint16_t* marioYawFacing = (uint16_t*)((char*)gMarioStates + 46);
+    float* marioHSpd = (float*)((char*)gMarioStates + 0x54);
+    uint16_t* camYaw = (uint16_t*)((char*)gCamera + 340);
+
+    unsigned short* controlButDown = (unsigned short*)((char*)gControllers + 0x10);
+
+    float* pyraXNorm = (float*)((char*)gObjectPool + 84 * 1392 + 324);
+    float* pyraYNorm = (float*)((char*)gObjectPool + 84 * 1392 + 328);
+    float* pyraZNorm = (float*)((char*)gObjectPool + 84 * 1392 + 332);
+
+    float* bullyX = (float*)((char*)gObjectPool + 57 * 1392 + 56);
+    float* bullyY = (float*)((char*)gObjectPool + 57 * 1392 + 60);
+    float* bullyZ = (float*)((char*)gObjectPool + 57 * 1392 + 64);
+
+    float* marioYVel = (float*)((char*)gMarioStates + 76);
+
     uint64_t s = 0;
-    unsigned int actTrunc = marioAction & 0x1FF;
+    unsigned int actTrunc = *marioAction & 0x1FF;
     if (actTrunc == ACT_BRAKE) s = 0;
     if (actTrunc == ACT_DIVE) s = 1;
     if (actTrunc == ACT_DIVE_LAND) s = 2;
@@ -547,34 +585,14 @@ Vec3d truncFunc(float x, float y, float z, unsigned int marioAction, float mario
     if (actTrunc == ACT_WALK) s = 9;
 
     s *= 30;
-    s += (int)((40 - marioYVel) / 4);
-
-    //s *= 3;
-
-    //fifd: Button press space mapped into 3 sections: no buttons, A only, anything else
-    //if (actTrunc < 0x80 || actTrunc == 0x0A7) {
-    //    if (controlButDown == 0)     s+= 1; // Pure nothing
-    //    if (controlButDown == 32768) s+= 2; // Pure A
-    //}
-
-    //s *= 2;
-
-    //if (actTrunc == 0x040 || actTrunc == 0x045) {
-    //    if (camMode == 32) s+= 1; // Close cam
-    //}
-
-    /*s *= 40;
-    s += (int)((pyraXNorm + 1)*20);
-
-    s *= 40;
-    s += (int)((pyraZNorm + 1)*20);*/
+    s += (int)((40 - *marioYVel) / 4);
 
     float norm_regime_min = .69;
     //float norm_regime_max = .67;
     float target_xnorm = -.30725;
     float target_znorm = .3665;
-    float x_delt = pyraXNorm - target_xnorm;
-    float z_delt = pyraZNorm - target_znorm;
+    float x_delt = *pyraXNorm - target_xnorm;
+    float z_delt = *pyraZNorm - target_znorm;
     float x_remainder = x_delt * 100 - floor(x_delt * 100);
     float z_remainder = z_delt * 100 - floor(z_delt * 100);
 
@@ -582,43 +600,43 @@ Vec3d truncFunc(float x, float y, float z, unsigned int marioAction, float mario
     //if((fabs(pyraXNorm) + fabs(pyraZNorm) < norm_regime_min) ||
     //   (fabs(pyraXNorm) + fabs(pyraZNorm) > norm_regime_max)){  //coarsen for bad norm regime
     if ((x_remainder > .001 && x_remainder < .999) || (z_remainder > .001 && z_remainder < .999) ||
-        (fabs(pyraXNorm) + fabs(pyraZNorm) < norm_regime_min)) { //coarsen for not target norm envelope
+        (fabs(*pyraXNorm) + fabs(*pyraZNorm) < norm_regime_min)) { //coarsen for not target norm envelope
         s *= 14;
-        s += (int)((pyraXNorm + 1) * 7);
+        s += (int)((*pyraXNorm + 1) * 7);
 
         s *= 14;
-        s += (int)((pyraZNorm + 1) * 7);
+        s += (int)((*pyraZNorm + 1) * 7);
 
-        s += 1000000 + 1000000 * (int)floor((marioHSpd + 20) / 8);
-        s += 100000000 * (int)floor((float)marioYawFacing / 16384.0);
+        s += 1000000 + 1000000 * (int)floor((*marioHSpd + 20) / 8);
+        s += 100000000 * (int)floor((float)*marioYawFacing / 16384.0);
 
         s *= 2;
         s += 1; //mark bad norm regime
 
-        return Vec3d { (uint8_t)floor((x + 2330) / 200), (uint8_t)floor((y + 3200) / 400), (uint8_t)floor((z + 1090) / 200), s };
+        return Vec3d { (uint8_t)floor((*x + 2330) / 200), (uint8_t)floor((*y + 3200) / 400), (uint8_t)floor((*z + 1090) / 200), s };
     }
     s *= 200;
-    s += (int)((pyraXNorm + 1) * 100);
+    s += (int)((*pyraXNorm + 1) * 100);
 
-    float xzSum = fabs(pyraXNorm) + fabs(pyraZNorm);
+    float xzSum = fabs(*pyraXNorm) + fabs(*pyraZNorm);
 
     s *= 10;
     xzSum += (int)((xzSum - norm_regime_min) * 100);
     //s += (int)((pyraZNorm + 1)*100);
 
     s *= 30;
-    s += (int)((pyraYNorm - .7) * 100);
+    s += (int)((*pyraYNorm - .7) * 100);
 
     //fifd: Hspd mapped into sections {0-1, 1-2, ...}
-    s += 30000000 + 30000000 * (int)floor((marioHSpd + 20));
+    s += 30000000 + 30000000 * (int)floor((*marioHSpd + 20));
 
     //fifd: Yaw mapped into sections
     //s += 100000000 * (int)floor((float)marioYawFacing / 2048.0);
-    s += ((uint64_t)1200000000) * (int)floor((float)marioYawFacing / 4096.0);
+    s += ((uint64_t)1200000000) * (int)floor((float)*marioYawFacing / 4096.0);
 
     s *= 2; //mark good norm regime
 
-    return Vec3d { (uint8_t)floor((x + 2330) / 10), (uint8_t)floor((y + 3200) / 50), (uint8_t)floor((z + 1090) / 10), s };
+    return Vec3d { (uint8_t)floor((*x + 2330) / 10), (uint8_t)floor((*y + 3200) / 50), (uint8_t)floor((*z + 1090) / 10), s };
 }
 
 //fifd: Check equality of truncated states
@@ -891,7 +909,11 @@ public:
     uint64_t RngSeed;
 
     Block BaseBlock;
+    Vec3d BaseStateBin;
     Input CurrentInput;
+
+    int StartCourse;
+    int StartArea;
 
     // TODO: Unimplemented?
     int LightningLength;
@@ -909,7 +931,7 @@ public:
         printf("Thread %d\n", Id);
     }
 
-    void Initialize(Configuration& config, GlobalState& gState, Vec3d initTruncPos)
+    void Initialize(Configuration& config, GlobalState& gState, Vec3d initTruncPos, HMODULE& dll)
     {
         // Initial block
         Blocks[0].pos = initTruncPos; //CHEAT TODO NOTE
@@ -935,6 +957,10 @@ public:
         gState.AllSegments[gState.NSegments[Id] + Id * config.MaxLocalSegments] = Blocks[0].tailSeg;
         gState.NSegments[Id]++;
         gState.NBlocks[Id]++;
+
+        // Record start course/area for validation (generally scattershot has no cross-level value)
+        StartCourse = *(short*)GetProcAddress(dll, "gCurrCourseNum");
+        StartArea = *(short*)GetProcAddress(dll, "gCurrAreaIndex");
     }
 
     bool SelectBaseBlock(Configuration& config, GlobalState& gState, int mainIteration)
@@ -978,6 +1004,45 @@ public:
         if (BaseBlock.tailSeg->depth == 0) { printf("BaseBlock depth is zero!\n"); }
 
         return true;
+    }
+
+    void UpdateLightning(Configuration& config, Vec3d stateBin)
+    {
+        if (!truncEq(stateBin, LightningLocal[LightningLengthLocal - 1])) {
+            if (LightningLengthLocal < config.MaxLightningLength) {
+                LightningLocal[LightningLengthLocal++] = stateBin;
+            }
+            else {
+                printf("Reached max lightning!\n");
+            }
+        }
+    }
+
+    bool ValidateBaseBlock(Vec3d baseBlockStateBin)
+    {
+        if (!truncEq(BaseBlock.pos, baseBlockStateBin)) {
+            printf("ORIG %d %d %d %ld AND BLOCK %d %d %d %ld NOT EQUAL\n",
+                baseBlockStateBin.x, baseBlockStateBin.y, baseBlockStateBin.z, baseBlockStateBin.s,
+                BaseBlock.pos.x, BaseBlock.pos.y, BaseBlock.pos.z, BaseBlock.pos.s);
+
+            Segment* curSegDebug = BaseBlock.tailSeg;
+            while (curSegDebug != 0) {  //inefficient but probably doesn't matter
+                if (curSegDebug->parent == 0)
+                    printf("Parent is null!");
+                if (curSegDebug->parent->depth + 1 != curSegDebug->depth) { printf("Depths wrong"); }
+                curSegDebug = curSegDebug->parent;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    bool ValidateCourseAndArea(HMODULE& dll)
+    {
+        return StartCourse == *(short*)GetProcAddress(dll, "gCurrCourseNum")
+            && StartArea == *(short*)GetProcAddress(dll, "gCurrAreaIndex");
     }
 };
 
@@ -1051,6 +1116,115 @@ void PrintStatus(Configuration& config, GlobalState& gState, int mainIteration, 
     printfQ("\n\n");
 }
 
+
+void DecodeAndExecuteDiff(Configuration& config, ThreadState& tState, Input* m64Diff, HMODULE& dll, int& frameOffset)
+{
+    Input* gControllerPads = (Input*)GetProcAddress(dll, "gControllerPads");
+    VOIDFUNC sm64_init = (VOIDFUNC)GetProcAddress(dll, "sm64_init");
+    VOIDFUNC sm64_update = (VOIDFUNC)GetProcAddress(dll, "sm64_update");
+
+    //UPDATED FOR SEGMENTS STRUCT
+    //Before, I temporarily reversed the linked list.
+    //But this doesn't work in a multi threaded environment.
+    //Punt and do this in quadratic time. This shouldn't be a
+    //bottleneck anyway but can fix it if needed
+    if (tState.BaseBlock.tailSeg == 0)
+        printf("origBlock has null tailSeg");
+
+    Segment* thisTailSeg = tState.BaseBlock.tailSeg;
+    Segment* curSeg;
+    int thisSegDepth = thisTailSeg->depth;
+    for (int i = 1; i <= thisSegDepth; i++) {
+        curSeg = thisTailSeg;
+        while (curSeg->depth != i) {  //inefficient but probably doesn't matter
+            if (curSeg->parent == 0)
+                printf("Parent is null!");
+            if (curSeg->parent->depth + 1 != curSeg->depth) { printf("Depths wrong"); }
+            curSeg = curSeg->parent;
+        }
+
+        //Run the inputs
+        uint64_t tmpSeed = curSeg->seed;
+        int megaRandom = xoro_r(&tmpSeed) % 2;
+        for (int f = 0; f < curSeg->numFrames; f++) {
+            perturbInput(dll, &tState.CurrentInput, &tmpSeed, frameOffset, megaRandom);
+            m64Diff[frameOffset++] = tState.CurrentInput;
+            *gControllerPads = tState.CurrentInput;
+            sm64_update();
+
+            tState.UpdateLightning(config, truncFunc(dll));
+        }
+    }
+}
+
+bool ValidateBlock(Configuration& config, ThreadState& tState, HMODULE& dll, Input* m64Diff, int frame)
+{
+    void* gMarioStates = GetProcAddress(dll, "gMarioStates");
+    void* gObjectPool = GetProcAddress(dll, "gObjectPool");
+    void* gCamera = GetProcAddress(dll, "gCamera");
+
+    float* marioX = (float*)((char*)gMarioStates + 60);
+    float* marioY = (float*)((char*)gMarioStates + 64);
+    float* marioZ = (float*)((char*)gMarioStates + 68);
+    unsigned int* marioAction = (unsigned int*)((char*)gMarioStates + 12);
+    uint16_t* marioYawFacing = (uint16_t*)((char*)gMarioStates + 46);
+    float* marioHSpd = (float*)((char*)gMarioStates + 0x54);
+    uint16_t* camYaw = (uint16_t*)((char*)gCamera + 340);
+    float* marioYVel = (float*)((char*)gMarioStates + 76);
+    float* marioFloorHeight = (float*)((char*)gMarioStates + 0x07C);
+
+    float* pyraXNorm = (float*)((char*)gObjectPool + 84 * 1392 + 324);
+    float* pyraYNorm = (float*)((char*)gObjectPool + 84 * 1392 + 328);
+    float* pyraZNorm = (float*)((char*)gObjectPool + 84 * 1392 + 332);
+
+    unsigned int actionTrunc = *marioAction & 0x1FF;
+
+    if (*marioX < -2330) return false;
+    if (*marioX > -1550) return false;
+    if (*marioZ < -1090) return false;
+    if (*marioZ > -300) return false;
+    if (*marioY > -2760) return false;
+    if (*pyraZNorm < -.15 || *pyraXNorm > 0.15) return false; //stay in desired quadrant
+    if (actionTrunc != ACT_BRAKE && actionTrunc != ACT_DIVE && actionTrunc != ACT_DIVE_LAND &&
+        actionTrunc != ACT_DR && actionTrunc != ACT_DR_LAND && actionTrunc != ACT_FREEFALL &&
+        actionTrunc != ACT_FREEFALL_LAND && actionTrunc != ACT_TURNAROUND_1 &&
+        actionTrunc != ACT_TURNAROUND_2 && actionTrunc != ACT_WALK) {
+        return false;
+    } //not useful action, such as lava boost
+    if (actionTrunc == ACT_FREEFALL && *marioYVel > -20.0) return false;//freefall without having done nut spot chain
+    if (*marioFloorHeight > -3071 && *marioY > *marioFloorHeight + 4 &&
+        *marioYVel != 22.0) return false;//above pyra by over 4 units
+    if (*marioFloorHeight == -3071 && actionTrunc != ACT_FREEFALL) return false; //diving/dring above lava
+
+    if (actionTrunc == ACT_DR && fabs(*pyraXNorm) > .3 && fabs(*pyraXNorm) + fabs(*pyraZNorm) > .65 &&
+        *marioX + *marioZ > (-1945 - 715)) {  //make sure Mario is going toward the right/east edge
+        char fileName[128];
+        //printf("dr\n");
+        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\dr\\bitfs_dr_%f_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel, tState.Id);
+        writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, frame + 1);
+    }
+
+    //check on hspd > 1 confirms we're in dr land rather than quickstopping,
+    //which gives the same action
+    if (actionTrunc == ACT_DR_LAND && *marioY > -2980 && *marioHSpd > 1
+        && fabs(*pyraXNorm) > .29 && fabs(*marioX) > -1680) {
+        char fileName[128];
+        //if(printingDRLand > 0)printf("dr land\n");
+        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\drland\\bitfs_drland_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, tState.Id);
+        writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, frame + 1);
+    }
+
+    return true;
+}
+
+float StateBinFitness(HMODULE& dll)
+{
+    void* gObjectPool = GetProcAddress(dll, "gObjectPool");
+    float* pyraYNorm = (float*)((char*)gObjectPool + 84 * 1392 + 328);
+
+    return *pyraYNorm;
+}
+
 void main(int argc, char* argv[]) {
     ParseArgs(argc, argv);
 
@@ -1067,57 +1241,13 @@ void main(int argc, char* argv[]) {
         ThreadState tState = ThreadState(config, gState, omp_get_thread_num());
 
         //TODO: revert hardcoding
-        LPCWSTR dlls[4] = {L"sm64_jp_0.dll", L"sm64_jp_1.dll" , L"sm64_jp_2.dll" , L"sm64_jp_3.dll" };
+        LPCWSTR dlls[4] = { L"sm64_jp_0.dll", L"sm64_jp_1.dll" , L"sm64_jp_2.dll" , L"sm64_jp_3.dll" };
         HMODULE hDLL = LoadLibrary(dlls[tState.Id]);
 
-        // Functions
         VOIDFUNC sm64_init = (VOIDFUNC)GetProcAddress(hDLL, "sm64_init");
         VOIDFUNC sm64_update = (VOIDFUNC)GetProcAddress(hDLL, "sm64_update");
         GFXFUNC  envfx_update_particles = (GFXFUNC)GetProcAddress(hDLL, "envfx_update_particles");
-
-        // Variables
         Input* gControllerPads = (Input*)GetProcAddress(hDLL, "gControllerPads");
-        void* gMarioStates = GetProcAddress(hDLL, "gMarioStates");
-        void* gObjectPool = GetProcAddress(hDLL, "gObjectPool");
-        void* gEnvironmentRegions = GetProcAddress(hDLL, "gEnvironmentRegions");
-        void* gCamera = GetProcAddress(hDLL, "gCamera");
-        void* gLakituState = GetProcAddress(hDLL, "gLakituState");
-        unsigned char* gLastCompletedStarNum = (unsigned char*)GetProcAddress(hDLL, "gLastCompletedStarNum");
-        short* gCurrCourseNum = (short*)GetProcAddress(hDLL, "gCurrCourseNum");
-        short* gCurrAreaIndex = (short*)GetProcAddress(hDLL, "gCurrAreaIndex");
-        void* gControllers = (void*)GetProcAddress(hDLL, "gControllers");
-        uint32_t* gTimeStopState = (uint32_t*)GetProcAddress(hDLL, "gTimeStopState");
-        uint8_t* redCnt = (uint8_t*)GetProcAddress(hDLL, "gRedCoinsCollected");
-
-        short* starCnt = (short*)((char*)gMarioStates + 230);
-        float* marioX = (float*)((char*)gMarioStates + 60);
-        float* marioY = (float*)((char*)gMarioStates + 64);
-        float* marioZ = (float*)((char*)gMarioStates + 68);
-        float* marioFloorHeight = (float*)((char*)gMarioStates + 0x07C);
-        float* marioHSpd = (float*)((char*)gMarioStates + 0x54);
-        uint16_t* marioYawFacing = (uint16_t*)((char*)gMarioStates + 46);
-        short* marioYawVel = (short*)((char*)gMarioStates + 52);
-        float* marioYVel = (float*)((char*)gMarioStates + 76);
-        short* marioPitch = (short*)((char*)gMarioStates + 44);
-        short* marioPitchVel = (short*)((char*)gMarioStates + 50);
-        uint16_t* camYaw = (uint16_t*)((char*)gCamera + 340);
-        uint8_t* camMode = (uint8_t*)hDLL + bssStart + 29605;
-        unsigned int* marioAction = (unsigned int*)((char*)gMarioStates + 12);
-        unsigned int* prevAction = (unsigned int*)((char*)gMarioStates + 0x10);
-        unsigned short* actionTimer = (unsigned short*)((char*)gMarioStates + 0x1A);
-        unsigned short* controlButDown = (unsigned short*)((char*)gControllers + 0x10);
-        uint32_t* ringCnt = (uint32_t*)((char*)gObjectPool + 18 * 1392 + 508);
-        char* firstCol = (char*)((char*)gObjectPool + 30 * 1392 + 412);
-
-        float* pyraXNorm = (float*)((char*)gObjectPool + 84 * 1392 + 324);
-        float* pyraYNorm = (float*)((char*)gObjectPool + 84 * 1392 + 328);
-        float* pyraZNorm = (float*)((char*)gObjectPool + 84 * 1392 + 332);
-
-        float* bullyX = (float*)((char*)gObjectPool + 57 * 1392 + 56);
-        float* bullyY = (float*)((char*)gObjectPool + 57 * 1392 + 60);
-        float* bullyZ = (float*)((char*)gObjectPool + 57 * 1392 + 64);
-
-        const int sumFramesBack = 12;
 
         sm64_init();
 
@@ -1139,22 +1269,16 @@ void main(int argc, char* argv[]) {
 
         riskyLoadJ(hDLL, &state);
 
-        Vec3d initTruncPos = truncFunc(*marioX, *marioY, *marioZ, *marioAction,
-            *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown,
-            *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel);
+        Vec3d initTruncPos = truncFunc(hDLL);
 
         // Give info to the root block.
-        tState.Initialize(config, gState, initTruncPos);
-
-        int startCourse = *gCurrCourseNum;
-        int startArea = *gCurrAreaIndex;
+        tState.Initialize(config, gState, initTruncPos, hDLL);
 
         double pureStart = omp_get_wtime();
 
         for (int mainLoop = 0; mainLoop <= 1000000000; mainLoop++) {
             int seg, trueF, origInx;
             Block newBlock;
-            uint64_t tmpSeed;
 
             // ALWAYS START WITH A MERGE SO THE SHARED BLOCKS ARE OK.
             if (mainLoop % 300 == 0) {
@@ -1187,87 +1311,19 @@ void main(int argc, char* argv[]) {
             riskyLoadJ(hDLL, &state);
             trueF = 0;
 
-            Vec3d newPos = truncFunc(*marioX, *marioY, *marioZ, *marioAction, *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown, *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel);
-            tState.LightningLocal[tState.LightningLengthLocal++] = newPos;
+            tState.LightningLocal[tState.LightningLengthLocal++] = truncFunc(hDLL);
 
-            //UPDATED FOR SEGMENTS STRUCT
-            //Before, I temporarily reversed the linked list.
-            //But this doesn't work in a multi threaded environment.
-            //Punt and do this in quadratic time. This shouldn't be a
-            //bottleneck anyway but can fix it if needed
-            if (tState.BaseBlock.tailSeg == 0)
-                printf("origBlock has null tailSeg");
-            Segment* thisTailSeg = tState.BaseBlock.tailSeg;
-            Segment* curSeg;
-            int thisSegDepth = thisTailSeg->depth;
-            float prevXZSums[sumFramesBack];
-            float prevHSpds[sumFramesBack];
-            memset(prevXZSums, 0, sizeof(prevXZSums));
-            memset(prevHSpds, 0, sizeof(prevHSpds));
-
-            for (int i = 1; i <= thisSegDepth; i++) {
-                curSeg = thisTailSeg;
-                while (curSeg->depth != i) {  //inefficient but probably doesn't matter
-                    if (curSeg->parent == 0)
-                        printf("Parent is null!");
-                    if (curSeg->parent->depth + 1 != curSeg->depth) { printf("Depths wrong"); }
-                    curSeg = curSeg->parent;
-                }
-
-                //Run the inputs
-                tmpSeed = curSeg->seed;
-                int megaRandom = xoro_r(&tmpSeed) % 2;
-                for (int f = 0; f < curSeg->numFrames; f++) {
-                    perturbInput(&tState.CurrentInput, &tmpSeed, trueF, *marioAction, *marioYawFacing, *pyraXNorm, *pyraZNorm, *marioHSpd, *camYaw, megaRandom);
-                    m64Diff[trueF++] = tState.CurrentInput;
-                    *gControllerPads = tState.CurrentInput;
-
-                    sm64_update();
-                    
-                    //updateValue(&value);
-                    float xzSum = fabs(*pyraXNorm) + fabs(*pyraZNorm);
-                    for (int prevXZSumInd = 0; prevXZSumInd < sumFramesBack - 1; prevXZSumInd++) {
-                        prevXZSums[prevXZSumInd] = prevXZSums[prevXZSumInd + 1];
-                        prevHSpds[prevXZSumInd] = prevHSpds[prevXZSumInd + 1];
-                    }
-                    prevXZSums[sumFramesBack - 1] = 0;
-                    prevHSpds[sumFramesBack - 1] = 0;
-                    unsigned int actionTrunc = *marioAction & 0x1FF;
-                    if (*marioHSpd > 0 && actionTrunc == 0x040) {
-                        prevXZSums[sumFramesBack - 1] = xzSum;
-                        prevHSpds[sumFramesBack - 1] = *marioHSpd;
-                    }
-
-                    newPos = truncFunc(*marioX, *marioY, *marioZ, *marioAction, *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown, *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel);
-                    if (!truncEq(newPos, tState.LightningLocal[tState.LightningLengthLocal - 1])) {
-                        if (tState.LightningLengthLocal < config.MaxLightningLength) {
-                            tState.LightningLocal[tState.LightningLengthLocal++] = newPos;
-                        }
-                        else {
-                            printf("Reached max lightning!\n");
-                        }
-                    }
-                }
-            }
+            DecodeAndExecuteDiff(config, tState, m64Diff, hDLL, trueF);
 
             save(hDLL, &state2);
-            //xorStates(&state, &state2, xorSlaves + tid, tid);
+
             Input origLastIn = tState.CurrentInput;
-            Vec3d origPos = truncFunc(*marioX, *marioY, *marioZ, *marioAction, *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown, *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel);
-            //int   origValue = value;
-            int origLightLenLocal = tState.LightningLengthLocal;
-            if (!truncEq(tState.BaseBlock.pos, origPos)) {
-                printf("ORIG %d %d %d %ld AND BLOCK %d %d %d %ld NOT EQUAL\n", origPos.x, origPos.y, origPos.z, origPos.s,
-                    tState.BaseBlock.pos.x, tState.BaseBlock.pos.y, tState.BaseBlock.pos.z, tState.BaseBlock.pos.s);
-                Segment* curSegDebug = tState.BaseBlock.tailSeg;
-                while (curSegDebug != 0) {  //inefficient but probably doesn't matter
-                    if (curSegDebug->parent == 0)printf("Parent is null!");
-                    if (curSegDebug->parent->depth + 1 != curSegDebug->depth) { printf("Depths wrong"); }
-                    curSegDebug = curSegDebug->parent;
-                }
-            }
+
+            if (!tState.ValidateBaseBlock(truncFunc(hDLL)))
+                return;
 
             // From state run a bunch of times.
+            int origLightLenLocal = tState.LightningLengthLocal;
             int subLoopMax = 200;
             if (mainLoop == 0) subLoopMax = 200;
             for (int subLoop = 0; subLoop < subLoopMax; subLoop++) {
@@ -1279,7 +1335,7 @@ void main(int argc, char* argv[]) {
                 riskyLoadJ(hDLL, &state2);
                 loadTime += omp_get_wtime() - timerStart;
 
-                oldPos = origPos;
+                oldPos = tState.BaseBlock.pos;
                 tState.CurrentInput = origLastIn;
                 tState.LightningLengthLocal = origLightLenLocal;
 
@@ -1287,7 +1343,7 @@ void main(int argc, char* argv[]) {
 
                 int maxRun = config.SegmentLength;
                 for (int f = 0; f < maxRun; f++) {
-                    perturbInput(&tState.CurrentInput, &tState.RngSeed, trueF + f, *marioAction, *marioYawFacing, *pyraXNorm, *pyraZNorm, *marioHSpd, *camYaw, megaRandom);
+                    perturbInput(hDLL, &tState.CurrentInput, &tState.RngSeed, trueF + f, megaRandom);
                     m64Diff[trueF + f] = tState.CurrentInput;
                     *gControllerPads = tState.CurrentInput;
 
@@ -1295,87 +1351,22 @@ void main(int argc, char* argv[]) {
                     sm64_update();
                     runTime += omp_get_wtime() - timerStart;
 
-                    unsigned int actionTrunc = *marioAction & 0x1FF;
-                    newPos = truncFunc(*marioX, *marioY, *marioZ, *marioAction, *marioHSpd, *marioYawFacing, *marioPitch, *marioPitchVel, *controlButDown, *camMode, *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel);
-
-                    if (*gCurrCourseNum != startCourse || *gCurrAreaIndex != startArea) break;
-
-                    //fifd: This is the check for the final objective function
-                    //to be minimized.
-                    //island, new idea
-                    float xzSum = fabs(*pyraXNorm) + fabs(*pyraZNorm);
-                    for (int prevXZSumInd = 0; prevXZSumInd < sumFramesBack - 1; prevXZSumInd++) {
-                        prevXZSums[prevXZSumInd] = prevXZSums[prevXZSumInd + 1];
-                        prevHSpds[prevXZSumInd] = prevHSpds[prevXZSumInd + 1];
-                    }
-                    prevXZSums[sumFramesBack - 1] = 0;
-                    prevHSpds[sumFramesBack - 1] = 0;
-                    if (*marioHSpd > 0 && actionTrunc == 0x040) {
-                        prevXZSums[sumFramesBack - 1] = xzSum;
-                        prevHSpds[sumFramesBack - 1] = *marioHSpd;
-                    }
-
-                    if (*marioX < -2330) break;
-                    if (*marioX > -1550) break;
-                    if (*marioZ < -1090) break;
-                    if (*marioZ > -300) break;
-                    if (*marioY > -2760) break;
-                    if (*pyraZNorm < -.15 || *pyraXNorm > 0.15) break; //stay in desired quadrant
-                    if (actionTrunc != ACT_BRAKE && actionTrunc != ACT_DIVE && actionTrunc != ACT_DIVE_LAND &&
-                        actionTrunc != ACT_DR && actionTrunc != ACT_DR_LAND && actionTrunc != ACT_FREEFALL &&
-                        actionTrunc != ACT_FREEFALL_LAND && actionTrunc != ACT_TURNAROUND_1 &&
-                        actionTrunc != ACT_TURNAROUND_2 && actionTrunc != ACT_WALK) {
+                    if (!tState.ValidateCourseAndArea(hDLL) || !ValidateBlock(config, tState, hDLL, m64Diff, trueF + f))
                         break;
-                    } //not useful action, such as lava boost
-                    if (actionTrunc == ACT_FREEFALL && *marioYVel > -20.0) break;//freefall without having done nut spot chain
-                    if (*marioFloorHeight > -3071 && *marioY > *marioFloorHeight + 4 &&
-                        *marioYVel != 22.0) break;//above pyra by over 4 units
-                    if (*marioFloorHeight == -3071 && actionTrunc != ACT_FREEFALL) break; //diving/dring above lava
 
-                    if (actionTrunc == ACT_DR && fabs(*pyraXNorm) > .3 && fabs(*pyraXNorm) + fabs(*pyraZNorm) > .65 &&
-                        *marioX + *marioZ > (-1945 - 715)) {  //make sure Mario is going toward the right/east edge
-                        char fileName[128];
-                        //printf("dr\n");
-                        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\dr\\bitfs_dr_%f_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel, tState.Id);
-                        writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, trueF + f + 1);
-                    }
-
-                    //check on hspd > 1 confirms we're in dr land rather than quickstopping,
-                    //which gives the same action
-                    if (actionTrunc == ACT_DR_LAND && *marioY > -2980 && *marioHSpd > 1
-                        && fabs(*pyraXNorm) > .29 && fabs(*marioX) > -1680) {
-                        char fileName[128];
-                        //if(printingDRLand > 0)printf("dr land\n");
-                        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\drland\\bitfs_drland_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, tState.Id);
-                        writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, trueF + f + 1);
-                    }
-
-                    if (!truncEq(newPos, tState.LightningLocal[tState.LightningLengthLocal - 1])) {
-                        if (tState.LightningLengthLocal < config.MaxLightningLength) {
-                            tState.LightningLocal[tState.LightningLengthLocal++] = newPos;
-                        }
-                        else {
-                            printf("Reached max lightning!\n");
-                        }
-                    }
+                    Vec3d newStateBin = truncFunc(hDLL);
+                    tState.UpdateLightning(config, newStateBin);
 
                     //fifd: Checks to see if we're in a new Block. If so, save off the segment so far.
                     timerStart = omp_get_wtime();
-                    if (actionTrunc < 0xC0 && !truncEq(newPos, oldPos) && !truncEq(newPos, origPos))
+                    if (!truncEq(newStateBin, oldPos) && !truncEq(newStateBin, tState.BaseBlock.pos))
                     {
                         // Create and add block to list.
-                        ProcessNewBlock(config, gState, tState, origSeed, f, newPos, -fabs(*pyraYNorm));
+                        ProcessNewBlock(config, gState, tState, origSeed, f, newStateBin, StateBinFitness(hDLL));
                         
-                        oldPos = newPos; // TTODO: Why this here?
+                        oldPos = newStateBin; // TODO: Why this here?
                     }
                     blockTime += omp_get_wtime() - timerStart;
-                }
-
-                //Now clear out sums array since we'll be making a new
-                //segment next.
-                for (int prevXZSumInd = 0; prevXZSumInd < sumFramesBack; prevXZSumInd++) {
-                    prevXZSums[prevXZSumInd] = 0;
-                    prevHSpds[prevXZSumInd] = 0;
                 }
             }
         }
