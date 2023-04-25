@@ -1,72 +1,8 @@
 #pragma once
-#include <wtypes.h>
-#include <cstdint>
-#include <cstdio>
+#include "Utils.hpp"
 
-char dataMap[8192] = "  0 ...........................X...........XX.XXX.X....................................................."
-"  1 ...................................................................................................."
-"  2 ...................................................................................................."
-"  3 ...................................................................................................."
-"  4 ...................................................................................................."
-"  5 ...................................................................................................."
-"  6 ...................................................................................................."
-"  7 ...................................................................................................."
-"  8 ...................................................................................................."
-"  9 ...................................................................................................."
-" 10 ...................................................................................................."
-" 11 ...................................................................................................."
-" 12 ...................................................................................................."
-" 13 ...................................................................................................."
-" 14 ...................................................................................................."
-" 15 ...................................................................................................."
-" 16 ...................................................................................................."
-" 17 ...................................................................................................."
-" 18 ...................................................................................................."
-" 19 ...................................................................................................."
-" 20 ...................................................................................................."
-" 21 ...................................................................................................."
-" 22 ...................................................................................................."
-" 23 ...................................................................................................."
-" 24 ...................................................................................................."
-" 25 ...........................X........................................................................";
-
-char bssMap[8192] = "  0 XX.....XXX.X................XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-"  1 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-"  2 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-"  3 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.XXXXXX................XXXXX.."
-"  4 ...............................X.......XXXXXXXXXXXX................................................."
-"  5 ..................XXXXXXXXXXXXXXXXXXXXXXXX.........................................................."
-"  6 ...................................................................................................."
-"  7 ...................................................................................................."
-"  8 ...................................................................................................."
-"  9 ...................................................................................................."
-" 10 ...................................................................................................."
-" 11 ...................................................................................................."
-" 12 ...................................................................................................."
-" 13 ...................................................................................................."
-" 14 ...................................................................................................."
-" 15 ...................................................................................................."
-" 16 ...................................................................................................."
-" 17 .....................................................................XX............................."
-" 18 ..................XXXX....X.......XXXXXXXX...............XXXX...........X.XXX..........XXXX........."
-" 19 ................XXX..X.X...X.X..XX.X..........X...X.........XX......................................"
-" 20 ........................XX.........................................................................."
-" 21 ...........................XX......................................................................."
-" 22 ......XXXXXX........................................................................................";
-
-typedef void (CALLBACK* VOIDFUNC)();
-typedef void* (CALLBACK* GFXFUNC)(int, void*, void*, void*);
-
-typedef struct {
-    unsigned short b;
-    char x;
-    char y;
-} Input;
-
-typedef struct {
-    void* data;
-    void* bss;
-} SaveState;
+#ifndef SCATTERSHOT_H
+#define SCATTERSHOT_H
 
 typedef struct Segment Segment;
 
@@ -78,25 +14,61 @@ struct Segment {
     uint8_t depth;
 };
 
+typedef struct Block;
+
 //fifd: Vec3d actually has 4 dimensions, where the first 3 are spatial and
 //the 4th encodes a lot of information about Mario's state (actions, speed,
 //camera) as well as some button information. These vectors specify a part
 //of state space.
-typedef struct {
+class Vec3d {
+public:
     uint8_t x;
     uint8_t y;
     uint8_t z;
     uint64_t s;
-} Vec3d;
+
+    int findNewHashInx(int* hashTab, int maxHashes) {
+        uint64_t tmpSeed = hashPos();
+        for (int i = 0; i < 100; i++) {
+            int inx = tmpSeed % maxHashes;
+            if (hashTab[inx] == -1) return inx;
+            Utils::xoro_r(&tmpSeed);
+        }
+        printf("Failed to find new hash index after 100 tries!\n");
+        return -1;
+    }
+
+    uint64_t hashPos() {
+        uint64_t tmpSeed = 0xCABBA6ECABBA6E;
+        tmpSeed += x + 0xCABBA6E;
+        Utils::xoro_r(&tmpSeed);
+        tmpSeed += y + 0xCABBA6E;
+        Utils::xoro_r(&tmpSeed);
+        tmpSeed += z + 0xCABBA6E;
+        Utils::xoro_r(&tmpSeed);
+        tmpSeed += s + 0xCABBA6E;
+        Utils::xoro_r(&tmpSeed);
+        return tmpSeed;
+    }
+
+    //fifd: Check equality of truncated states
+    int truncEq(Vec3d b) {
+        return (x == b.x) && (y == b.y) && (z == b.z) && (s == b.s);
+    }
+
+    int findBlock(Block* blocks, int* hashTab, int maxHashes, int nMin, int nMax);
+
+
+};
 
 //fifd: I think this is an element of the partition of state
 //space. Will need to understand what each of its fields are
-typedef struct {
+typedef struct Block {
     Vec3d         pos;    //fifd: an output of truncFunc. Identifies which block this is
     float         value;    //fifd: a fitness of the best TAS that reaches this block; the higher the better.
     Segment* tailSeg;
     //Time is most important component of value but keeps higher hspeed if time is tied
-} Block;
+};
 
 typedef struct {
     float x, y, z;
@@ -148,36 +120,6 @@ public:
     }
 };
 
-int dataStart, dataLength, bssStart, bssLength;
-int gPrint = 1, gLog = 1;
-char gProgName[192] = { 0 };
-FILE* gLogFP = NULL;
-
-void printfQ(const char* format, ...) {
-    va_list args;
-    va_start(args, format);
-    if (gPrint) vprintf(format, args);
-    if (gLog) {
-        if (!gLogFP) {
-            char logName[256] = { 0 };
-            sprintf(logName, "%s_log.txt", gProgName);
-            gLogFP = fopen(logName, "a");
-        }
-        vfprintf(gLogFP, format, args);
-    }
-    va_end(args);
-}
-
-void flushLog() {
-    fclose(gLogFP);
-    gLogFP = NULL;
-}
-
-//fifd: only called by xoro_r
-static inline uint32_t rotl(const uint32_t x, int k) {
-    return (x << k) | (x >> (32 - k));
-}
-
 class ThreadState
 {
 public:
@@ -227,7 +169,7 @@ public:
         for (int hashInx = 0; hashInx < config.MaxHashes; hashInx++)
             HashTab[hashInx] = -1;
 
-        HashTab[findNewHashInx(HashTab, config.MaxHashes, Blocks[0].pos)] = 0;
+        HashTab[Blocks[0].pos.findNewHashInx(HashTab, config.MaxHashes)] = 0;
 
         // Lightning
         LightningLength = 0;
@@ -255,8 +197,8 @@ public:
         }
         else if (mainIteration % 7 == 1 && LightningLength > 0) {
             for (int attempt = 0; attempt < 1000; attempt++) {
-                int randomLightInx = xoro_r(&RngSeed) % LightningLength;
-                origInx = findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, Lightning[randomLightInx], 0, gState.NBlocks[config.TotalThreads]);
+                int randomLightInx = Utils::xoro_r(&RngSeed) % LightningLength;
+                origInx = Lightning[randomLightInx].findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, 0, gState.NBlocks[config.TotalThreads]);
                 if (origInx != gState.NBlocks[config.TotalThreads]) break;
             }
             if (origInx == gState.NBlocks[config.TotalThreads]) {
@@ -265,9 +207,9 @@ public:
             }
         }
         else {
-            int weighted = xoro_r(&RngSeed) % 5;
+            int weighted = Utils::xoro_r(&RngSeed) % 5;
             for (int attempt = 0; attempt < 100000; attempt++) {
-                origInx = xoro_r(&RngSeed) % gState.NBlocks[config.TotalThreads];
+                origInx = Utils::xoro_r(&RngSeed) % gState.NBlocks[config.TotalThreads];
                 if (gState.SharedBlocks[origInx].tailSeg == 0) { printf("Chosen block tailseg null!\n"); continue; }
                 if (gState.SharedBlocks[origInx].tailSeg->depth == 0) { printf("Chosen block tailseg depth 0!\n"); continue; }
                 uint64_t s = gState.SharedBlocks[origInx].pos.s;
@@ -275,7 +217,7 @@ public:
                 float xNorm = (float)((int)normInfo / 30);
                 float zNorm = (float)(normInfo % 30);
                 float approxXZSum = fabs((xNorm - 15) / 15) + fabs((zNorm - 15) / 15) + .01;
-                if (((float)(xoro_r(&RngSeed) % 50) / 100 < approxXZSum * approxXZSum) & (gState.SharedBlocks[origInx].tailSeg->depth < config.MaxSegments)) break;
+                if (((float)(Utils::xoro_r(&RngSeed) % 50) / 100 < approxXZSum * approxXZSum) & (gState.SharedBlocks[origInx].tailSeg->depth < config.MaxSegments)) break;
             }
             if (origInx == gState.NBlocks[config.TotalThreads]) {
                 printf("Could not find block!\n");
@@ -292,7 +234,7 @@ public:
 
     void UpdateLightning(Configuration& config, Vec3d stateBin)
     {
-        if (!truncEq(stateBin, LightningLocal[LightningLengthLocal - 1])) {
+        if (!stateBin.truncEq(LightningLocal[LightningLengthLocal - 1])) {
             if (LightningLengthLocal < config.MaxLightningLength) {
                 LightningLocal[LightningLengthLocal++] = stateBin;
             }
@@ -304,7 +246,7 @@ public:
 
     bool ValidateBaseBlock(Vec3d baseBlockStateBin)
     {
-        if (!truncEq(BaseBlock.pos, baseBlockStateBin)) {
+        if (!BaseBlock.pos.truncEq(baseBlockStateBin)) {
             printf("ORIG %d %d %d %ld AND BLOCK %d %d %d %ld NOT EQUAL\n",
                 baseBlockStateBin.x, baseBlockStateBin.y, baseBlockStateBin.z, baseBlockStateBin.s,
                 BaseBlock.pos.x, BaseBlock.pos.y, BaseBlock.pos.z, BaseBlock.pos.s);
@@ -329,3 +271,5 @@ public:
             && StartArea == *(short*)GetProcAddress(dll, "gCurrAreaIndex");
     }
 };
+
+#endif

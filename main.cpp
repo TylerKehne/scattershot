@@ -1,17 +1,5 @@
-#include <stdio.h>
-#include <stdbool.h>
-#include <stdlib.h>
-#include <windows.h>
-#include <time.h>
-#include <dbghelp.h>
-#include <omp.h>
-#include <winbase.h>
-#include <stdarg.h>
-#include <stdint.h>
-
-#define _USE_MATH_DEFINES
-#include <math.h>
 #include <Scattershot.hpp>
+#include <Utils.hpp>
 
 #define CONT_A 0x8000
 #define CONT_B 0x4000
@@ -145,8 +133,8 @@ void perturbInput(HMODULE& dll, Input* in, uint64_t* seed, int frame, int megaRa
 
     if (actTrunc == ACT_DR || actTrunc == ACT_DIVE) {
         in->b = 0;
-        in->x = (xoro_r(seed) % 256) - 128;
-        in->y = (xoro_r(seed) % 256) - 128;
+        in->x = (Utils::xoro_r(seed) % 256) - 128;
+        in->y = (Utils::xoro_r(seed) % 256) - 128;
         return;
     }
 
@@ -158,17 +146,17 @@ void perturbInput(HMODULE& dll, Input* in, uint64_t* seed, int frame, int megaRa
             return;
         }
         in->b = 0;
-        in->x = (xoro_r(seed) % 256) - 128;
-        in->y = (xoro_r(seed) % 256) - 128;
+        in->x = (Utils::xoro_r(seed) % 256) - 128;
+        in->y = (Utils::xoro_r(seed) % 256) - 128;
         return;
     }
 
 
-    if (frame == 0 || xoro_r(seed) % jFact == 0) {
-        int choice = xoro_r(seed) % 3;
+    if (frame == 0 || Utils::xoro_r(seed) % jFact == 0) {
+        int choice = Utils::xoro_r(seed) % 3;
         if (choice == 0) {  //fifd: with probability 1/3, random joystick
-            in->x = (xoro_r(seed) % 256) - 128;
-            in->y = (xoro_r(seed) % 256) - 128;
+            in->x = (Utils::xoro_r(seed) % 256) - 128;
+            in->y = (Utils::xoro_r(seed) % 256) - 128;
         }
         else if (choice == 1) { //fifd: with probability 1/3, go as close as we can to barely downhill
             int downhillAngle = 0;
@@ -180,10 +168,10 @@ void perturbInput(HMODULE& dll, Input* in, uint64_t* seed, int frame, int megaRa
             int lefthillDiff = *marioYawFacing - lefthillAngle;
             int tarAng = (int)*marioYawFacing - (int)*camYaw;
             if (abs(lefthillDiff + 65536 * 2) % 65536 < 16384 || abs(lefthillDiff + 65536 * 2) % 65536 > 49152) {
-                tarAng = (int)lefthillAngle - (int)*camYaw + (xoro_r(seed) % 80 - 70);
+                tarAng = (int)lefthillAngle - (int)*camYaw + (Utils::xoro_r(seed) % 80 - 70);
             }
             else {
-                tarAng = (int)righthillAngle - (int)*camYaw + (xoro_r(seed) % 80 - 10);
+                tarAng = (int)righthillAngle - (int)*camYaw + (Utils::xoro_r(seed) % 80 - 10);
             }
             float tarRad = tarAng * M_PI / 32768.0;
             float tarX = 100 * sin(tarRad);
@@ -217,11 +205,11 @@ void perturbInput(HMODULE& dll, Input* in, uint64_t* seed, int frame, int megaRa
     int uphillDiff = (*marioYawFacing - downhillAngle + 32768 + 65536 * 2) % 65536;
     //check for pbdr conditions
     if (fabs(*pyraXNorm) + fabs(*pyraZNorm) > .6 && *marioHSpd >= 29.0 &&
-        (uphillDiff < 6000 || uphillDiff > 59536) && xoro_r(seed) % 5 < 4 &&
+        (uphillDiff < 6000 || uphillDiff > 59536) && Utils::xoro_r(seed) % 5 < 4 &&
         actTrunc == ACT_WALK) {
         //printf("did this\n");
         //printf("%f %f %f %d \n", pyraXNorm, pyraZNorm, marioHSpd, uphillDiff);
-        int tarAng = (int)*marioYawFacing - (int)*camYaw + xoro_r(seed) % 14000 - 7000;
+        int tarAng = (int)*marioYawFacing - (int)*camYaw + Utils::xoro_r(seed) % 14000 - 7000;
         float tarRad = tarAng * M_PI / 32768.0;
         float tarX = 100 * sin(tarRad);
         float tarY = -100 * cos(tarRad);
@@ -241,8 +229,8 @@ void perturbInput(HMODULE& dll, Input* in, uint64_t* seed, int frame, int megaRa
         //printf("did this 2\n");
         in->b = 0;
         in->b |= CONT_B; //dive recover
-        in->x = (xoro_r(seed) % 256) - 128;
-        in->y = (xoro_r(seed) % 256) - 128;
+        in->x = (Utils::xoro_r(seed) % 256) - 128;
+        in->y = (Utils::xoro_r(seed) % 256) - 128;
         return;
     }
 
@@ -356,10 +344,7 @@ Vec3d truncFunc(HMODULE& dll)
     return Vec3d { (uint8_t)floor((*x + 2330) / 10), (uint8_t)floor((*y + 3200) / 50), (uint8_t)floor((*z + 1090) / 10), s };
 }
 
-//fifd: Check equality of truncated states
-int truncEq(Vec3d a, Vec3d b) {
-    return (a.x == b.x) && (a.y == b.y) && (a.z == b.z) && (a.s == b.s);
-}
+
 
 //UPDATED FOR SEGMENT STRUCT
 int blockLength(Block a) {
@@ -394,74 +379,15 @@ int leftLine(float a, float b, float c, float d, float e, float f) {
     return (b - d) * (e - a) + (c - a) * (f - b) > 0 ? 0 : 1;
 }
 
-uint64_t hashPos(Vec3d pos) {
-    uint64_t tmpSeed = 0xCABBA6ECABBA6E;
-    tmpSeed += pos.x + 0xCABBA6E;
-    xoro_r(&tmpSeed);
-    tmpSeed += pos.y + 0xCABBA6E;
-    xoro_r(&tmpSeed);
-    tmpSeed += pos.z + 0xCABBA6E;
-    xoro_r(&tmpSeed);
-    tmpSeed += pos.s + 0xCABBA6E;
-    xoro_r(&tmpSeed);
-    return tmpSeed;
-}
 
-int findNewHashInx(int* hashTab, int maxHashes, Vec3d pos) {
-    uint64_t tmpSeed = hashPos(pos);
-    for (int i = 0; i < 100; i++) {
-        int inx = tmpSeed % maxHashes;
-        if (hashTab[inx] == -1) return inx;
-        xoro_r(&tmpSeed);
-    }
-    printf("Failed to find new hash index after 100 tries!\n");
-    return -1;
-}
 
-//fifd: Given the data identifying the current block (pos), identify
-//the index of that block in the hash table.
-//Have not read this in detail or figured out the other arguments,
-//but probably not important to understand
-int findBlock(Block* blocks, int* hashTab, int maxHashes, Vec3d pos, int nMin, int nMax) {
-    uint64_t tmpSeed = hashPos(pos);
-    for (int i = 0; i < 100; i++) {
-        int inx = tmpSeed % maxHashes;
-        int blockInx = hashTab[inx];
-        if (blockInx == -1) return nMax;
-        if (blockInx >= nMin && blockInx < nMax) {
-            if (truncEq(blocks[blockInx].pos, pos)) {
-                return blockInx;
-            }
-        }
-        xoro_r(&tmpSeed);
-    }
-    printf("Failed to find block from hash after 100 tries!\n");
-    return -1; // TODO: Should be nMax?
-}
 
-void ParseArgs(int argc, char* argv[])
-{
-    strncpy(gProgName, argv[0], 128);
-    for (int i = 0; i < 2; i++) {
-        if (i >= argc) continue;
-        printf("arg %d = %s\n", i, argv[i]);
-        if (!strcmp(argv[i], "-silent")) {
-            printf("Using silent mode.\n");
-            gPrint = 0;
-        }
-    }
-    printf("Not checking further args.\n");
-}
 
-void ScanDll()
-{
-    LPCWSTR dllBaseName = L"sm64_jp";
-    LPCWSTR dllFullName = L"sm64_jp.dll";
-    HMODULE testDLL = LoadLibrary(dllFullName);
 
-    getDllInfo(testDLL);
-    printf("Got DLL segments data %d %d bss %d %d\n", dataStart, dataLength, bssStart, bssLength);
-}
+
+
+
+
 
 void InitConfiguration(Configuration& configuration)
 {
@@ -478,22 +404,22 @@ void InitConfiguration(Configuration& configuration)
     configuration.MaxLightningLength = 10000;
 }
 
-void MergeBlocks(Configuration& config, GlobalState& gState)
+void MergeBlocks(Configuration& config, GlobalState& gState, Printer& printer)
 {
-    printfQ("Merging blocks.\n");
+    printer.printfQ("Merging blocks.\n");
 
     int otid, n, m;
     for (otid = 0; otid < config.TotalThreads; otid++) {
         for (n = 0; n < gState.NBlocks[otid]; n++) {
             Block tmpBlock = gState.AllBlocks[otid * config.MaxBlocks + n];
-            m = findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, tmpBlock.pos, 0, gState.NBlocks[config.TotalThreads]);
+            m = tmpBlock.pos.findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, 0, gState.NBlocks[config.TotalThreads]);
             if (m < gState.NBlocks[config.TotalThreads]) {
                 if (tmpBlock.value > gState.SharedBlocks[m].value) { // changed to >
                     gState.SharedBlocks[m] = tmpBlock;
                 }
             }
             else {
-                gState.SharedHashTab[findNewHashInx(gState.SharedHashTab, config.MaxSharedHashes, tmpBlock.pos)] = gState.NBlocks[config.TotalThreads];
+                gState.SharedHashTab[tmpBlock.pos.findNewHashInx(gState.SharedHashTab, config.MaxSharedHashes)] = gState.NBlocks[config.TotalThreads];
                 gState.SharedBlocks[gState.NBlocks[config.TotalThreads]++] = tmpBlock;
             }
         }
@@ -576,27 +502,17 @@ Input* GetM64(const char* path)
 
 
 
-void riskyLoadJ(HMODULE hDLL, SaveState* s, ThreadState& tState) {
-    auto timerStart = omp_get_wtime();
 
-    memcpy((char*)hDLL + dataStart + 0, (char*)s->data + 0, 100000);
-    memcpy((char*)hDLL + dataStart + 20 * 100000, (char*)s->data + 20 * 100000, 100000);
-    memcpy((char*)hDLL + bssStart + 0, (char*)s->bss + 0, 6 * 100000);
-    memcpy((char*)hDLL + bssStart + 17 * 100000, (char*)s->bss + 17 * 100000, 6 * 100000);
-    memcpy((char*)hDLL + bssStart + 47 * 100000, (char*)s->bss + 47 * 100000, 100000);
 
-    tState.LoadTime += omp_get_wtime() - timerStart;
-}
-
-void AdvanceToStart(Configuration& config, ThreadState& tState, SaveState& saveState, HMODULE& dll, Input* fileInputs)
+void AdvanceToStart(Configuration& config, ThreadState& tState, SaveState& saveState, Dll& dll, Input* fileInputs)
 {
-    Input* gControllerPads = (Input*)GetProcAddress(dll, "gControllerPads");
-    VOIDFUNC sm64_update = (VOIDFUNC)GetProcAddress(dll, "sm64_update");
+    Input* gControllerPads = (Input*)GetProcAddress(dll.hdll, "gControllerPads");
+    VOIDFUNC sm64_update = (VOIDFUNC)GetProcAddress(dll.hdll, "sm64_update");
 
     for (int f = 0; f < config.StartFrame + 5; f++) {
         *gControllerPads = tState.CurrentInput = fileInputs[f];
         sm64_update();
-        if (f == config.StartFrame - 1) save(dll, &saveState);
+        if (f == config.StartFrame - 1) saveState.save(dll);
     }
 }
 
@@ -613,8 +529,8 @@ void ProcessNewBlock(Configuration& config, GlobalState& gState, ThreadState& tS
         newBlock = tState.BaseBlock;
         newBlock.pos = newPos;
         newBlock.value = newFitness;
-        int blInxLocal = findBlock(tState.Blocks, tState.HashTab, config.MaxHashes, newPos, 0, gState.NBlocks[tState.Id]);
-        int blInx = findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, newPos, 0, gState.NBlocks[config.TotalThreads]);
+        int blInxLocal = newPos.findBlock(tState.Blocks, tState.HashTab, config.MaxHashes, 0, gState.NBlocks[tState.Id]);
+        int blInx = newPos.findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, 0, gState.NBlocks[config.TotalThreads]);
 
         if (blInxLocal < gState.NBlocks[tState.Id]) { // Existing local block.
             if (newBlock.value >= tState.Blocks[blInxLocal].value) {
@@ -634,7 +550,7 @@ void ProcessNewBlock(Configuration& config, GlobalState& gState, ThreadState& tS
         }
         else if (blInx < gState.NBlocks[config.TotalThreads] && newBlock.value < gState.SharedBlocks[blInx].value);// Existing shared block but worse.
         else { // Existing shared block and better OR completely new block.
-            tState.HashTab[findNewHashInx(tState.HashTab, config.MaxHashes, newPos)] = gState.NBlocks[tState.Id];
+            tState.HashTab[newPos.findNewHashInx(tState.HashTab, config.MaxHashes)] = gState.NBlocks[tState.Id];
             Segment* newSeg = (Segment*)malloc(sizeof(Segment));
             newSeg->parent = tState.BaseBlock.tailSeg;
             newSeg->refCount = 1;
@@ -651,11 +567,11 @@ void ProcessNewBlock(Configuration& config, GlobalState& gState, ThreadState& tS
     }
 }
 
-void PrintStatus(Configuration& config, GlobalState& gState, ThreadState& tState, int mainIteration)
+void PrintStatus(Configuration& config, GlobalState& gState, ThreadState& tState, int mainIteration, Printer& printer)
 {
-    printfQ("\nThread ALL Loop %d blocks %d\n", mainIteration, gState.NBlocks[config.TotalThreads]);
-    printfQ("LOAD %.3f RUN %.3f BLOCK %.3f TOTAL %.3f\n", tState.LoadTime, tState.RunTime, tState.BlockTime, omp_get_wtime() - tState.LoopTimeStamp);
-    printfQ("\n\n");
+    printer.printfQ("\nThread ALL Loop %d blocks %d\n", mainIteration, gState.NBlocks[config.TotalThreads]);
+    printer.printfQ("LOAD %.3f RUN %.3f BLOCK %.3f TOTAL %.3f\n", tState.LoadTime, tState.RunTime, tState.BlockTime, omp_get_wtime() - tState.LoopTimeStamp);
+    printer.printfQ("\n\n");
 
     tState.LoadTime = tState.RunTime = tState.BlockTime = 0;
     tState.LoopTimeStamp = omp_get_wtime();
@@ -691,7 +607,7 @@ int DecodeAndExecuteDiff(Configuration& config, ThreadState& tState, Input* m64D
 
         //Run the inputs
         uint64_t tmpSeed = curSeg->seed;
-        int megaRandom = xoro_r(&tmpSeed) % 2;
+        int megaRandom = Utils::xoro_r(&tmpSeed) % 2;
         for (int f = 0; f < curSeg->numFrames; f++) {
             perturbInput(dll, &tState.CurrentInput, &tmpSeed, frameOffset, megaRandom);
             m64Diff[frameOffset++] = tState.CurrentInput;
@@ -748,8 +664,8 @@ bool ValidateBlock(Configuration& config, ThreadState& tState, HMODULE& dll, Inp
         *marioX + *marioZ > (-1945 - 715)) {  //make sure Mario is going toward the right/east edge
         char fileName[128];
         //printf("dr\n");
-        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\dr\\bitfs_dr_%f_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel, tState.Id);
-        writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, frame + 1);
+        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\scattershot\\x64\\Debug\\m64s\\dr\\bitfs_dr_%f_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel, tState.Id);
+        Utils::writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\scattershot\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, frame + 1);
     }
 
     //check on hspd > 1 confirms we're in dr land rather than quickstopping,
@@ -758,8 +674,8 @@ bool ValidateBlock(Configuration& config, ThreadState& tState, HMODULE& dll, Inp
         && fabs(*pyraXNorm) > .29 && fabs(*marioX) > -1680) {
         char fileName[128];
         //if(printingDRLand > 0)printf("dr land\n");
-        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\m64s\\drland\\bitfs_drland_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, tState.Id);
-        writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, frame + 1);
+        sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\scattershot\\x64\\Debug\\m64s\\drland\\bitfs_drland_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, tState.Id);
+        Utils::writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\scattershot\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, frame + 1);
     }
 
     return true;
@@ -796,7 +712,7 @@ void ExtendTasFromBlock(Configuration& config, GlobalState& gState, ThreadState&
 
         //fifd: Checks to see if we're in a new Block. If so, save off the segment so far.
         timerStart = omp_get_wtime();
-        if (!truncEq(newStateBin, prevStateBin) && !truncEq(newStateBin, tState.BaseBlock.pos))
+        if (!newStateBin.truncEq(prevStateBin) && !newStateBin.truncEq(tState.BaseBlock.pos))
         {
             // Create and add block to list.
             ProcessNewBlock(config, gState, tState, baseRngSeed, f, newStateBin, StateBinFitness(dll));
@@ -808,34 +724,13 @@ void ExtendTasFromBlock(Configuration& config, GlobalState& gState, ThreadState&
 }
 
 
-template <typename F>
-void MultiThread(F func)
-{
-    #pragma omp parallel
-    {
-        func();
-    }
-}
 
 
-template <typename F>
-void SingleThread(F func)
-{
-    #pragma omp barrier
-    {
-        if (omp_get_thread_num() == 0)
-            func();
-    }
-    #pragma omp barrier
 
-    return;
-}
-
-
-void MergeState(Configuration& config, GlobalState& gState, ThreadState& tState, int mainIteration)
+void MergeState(Configuration& config, GlobalState& gState, ThreadState& tState, int mainIteration, Printer& printer)
 {
     // Merge all blocks from all threads and redistribute info.
-    MergeBlocks(config, gState);
+    MergeBlocks(config, gState, printer);
 
     // Handle segments
     MergeSegments(config, gState);
@@ -843,77 +738,77 @@ void MergeState(Configuration& config, GlobalState& gState, ThreadState& tState,
     if (mainIteration % 3000 == 0)
         SegmentGarbageCollection(config, gState);
 
-    PrintStatus(config, gState, tState, mainIteration);
+    PrintStatus(config, gState, tState, mainIteration, printer);
+
+    printer.flushLog();
 }
 
 void main(int argc, char* argv[])
 {
-    ParseArgs(argc, argv);
-    ScanDll();
+    Printer printer;
+    printer.ParseArgs(argc, argv);
 
     Configuration config;
     InitConfiguration(config);
     GlobalState gState = GlobalState(config);
 
     omp_set_num_threads(config.TotalThreads);
-    MultiThread([&]()
+    Utils::MultiThread([&]()
         {
             //TODO: Maybe don't hardcode DLLs
             LPCWSTR dlls[4] = { L"sm64_jp_0.dll", L"sm64_jp_1.dll" , L"sm64_jp_2.dll" , L"sm64_jp_3.dll" };
             ThreadState tState = ThreadState(config, gState, omp_get_thread_num());
-            HMODULE hDLL = LoadLibrary(dlls[tState.Id]);
+            Dll dll;
+            dll.getDllInfo(dlls[tState.Id]);
             SaveState state, state2;
-            allocState(&state);
-            allocState(&state2);
+            state.allocState(dll);
+            state2.allocState(dll);
             Input* m64Diff = (Input*)malloc(sizeof(Input) * (config.SegmentLength * config.MaxSegments + 256)); // Todo: Nasty
 
             // Initialize game
-            VOIDFUNC sm64_init = (VOIDFUNC)GetProcAddress(hDLL, "sm64_init");
+            VOIDFUNC sm64_init = (VOIDFUNC)GetProcAddress(dll.hdll, "sm64_init");
             sm64_init();
 
             // Read inputs from file and advance to start frame
-            Input* fileInputs = GetM64("C:\\Users\\Tyler\\Documents\\repos\\uscx\\x64\\Debug\\4_units_from_edge.m64");
-            AdvanceToStart(config, tState, state, hDLL, fileInputs);
-            riskyLoadJ(hDLL, &state, tState);
+            Input* fileInputs = GetM64("C:\\Users\\Tyler\\Documents\\repos\\scattershot\\x64\\Debug\\4_units_from_edge.m64");
+            AdvanceToStart(config, tState, state, dll, fileInputs);
+            tState.LoadTime += state.riskyLoadJ(dll);
 
             // Initialize thread state
-            tState.Initialize(config, gState, truncFunc(hDLL), hDLL);
+            tState.Initialize(config, gState, truncFunc(dll.hdll), dll.hdll);
 
             for (int mainIteration = 0; mainIteration <= 1000000000; mainIteration++) {
                 // ALWAYS START WITH A MERGE SO THE SHARED BLOCKS ARE OK.
                 if (mainIteration % 300 == 0)
-                {
-                    SingleThread([&]() { MergeState(config, gState, tState, mainIteration); });
-                    flushLog();
-                }
+                    Utils::SingleThread([&](){ MergeState(config, gState, tState, mainIteration, printer); });
 
                 // Pick a block to "fire a scattershot" at
                 if (!tState.SelectBaseBlock(config, gState, mainIteration))
                     break;
 
                 // Revert to initial state, and advance game state to end of block diff
-                riskyLoadJ(hDLL, &state, tState);
+                tState.LoadTime += state.riskyLoadJ(dll);
                 tState.LightningLengthLocal = 0;
-                tState.LightningLocal[tState.LightningLengthLocal++] = truncFunc(hDLL);
-                int frameOffset = DecodeAndExecuteDiff(config, tState, m64Diff, hDLL);
-                save(hDLL, &state2);
+                tState.LightningLocal[tState.LightningLengthLocal++] = truncFunc(dll.hdll);
+                int frameOffset = DecodeAndExecuteDiff(config, tState, m64Diff, dll.hdll);
+                state2.save(dll);
 
                 // Sanity check that state matches saved block state
-                if (!tState.ValidateBaseBlock(truncFunc(hDLL)))
+                if (!tState.ValidateBaseBlock(truncFunc(dll.hdll)))
                     return;
 
                 // "Fire" the scattershot, i.e. execute a batch of semi-random inputs from the base block state.
                 Input origLastIn = tState.CurrentInput;
                 int origLightLenLocal = tState.LightningLengthLocal;
                 for (int subLoop = 0; subLoop < 200; subLoop++) {
-                    riskyLoadJ(hDLL, &state2, tState);
+                    tState.LoadTime += state2.riskyLoadJ(dll);
 
                     tState.CurrentInput = origLastIn;
                     tState.LightningLengthLocal = origLightLenLocal;
 
                     uint64_t baseRngSeed = tState.RngSeed;
-                    int megaRandom = xoro_r(&tState.RngSeed) % 2;
-                    ExtendTasFromBlock(config, gState, tState, hDLL, m64Diff, frameOffset, megaRandom, baseRngSeed, tState.BaseBlock.pos);
+                    int megaRandom = Utils::xoro_r(&tState.RngSeed) % 2;
+                    ExtendTasFromBlock(config, gState, tState, dll.hdll, m64Diff, frameOffset, megaRandom, baseRngSeed, tState.BaseBlock.pos);
                 }
             }
         });

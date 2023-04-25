@@ -26,10 +26,10 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Utils.hpp">
+    <ClInclude Include="Scattershot.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Scattershot.hpp">
+    <ClInclude Include="Utils.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
