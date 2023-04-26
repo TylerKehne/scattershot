@@ -61,14 +61,117 @@
 class Script
 {
 public:
+    Configuration& config;
+    GlobalState& gState;
+    ThreadState& tState;
+    Dll& dll;
 
+    int StartCourse;
+    int StartArea;
+
+    Script(Configuration& config, GlobalState& gState, ThreadState& tState, Dll& dll) : config(config), gState(gState), tState(tState), dll(dll)
+    {
+
+
+    }
+
+    void Initialize(Vec3d initTruncPos)
+    {
+        tState.Initialize(config, gState, initTruncPos);
+
+        // Record start course/area for validation (generally scattershot has no cross-level value)
+        StartCourse = *(short*)GetProcAddress(dll.hdll, "gCurrCourseNum");
+        StartArea = *(short*)GetProcAddress(dll.hdll, "gCurrAreaIndex");
+    }
+
+    bool ValidateCourseAndArea()
+    {
+        return StartCourse == *(short*)GetProcAddress(dll.hdll, "gCurrCourseNum")
+            && StartArea == *(short*)GetProcAddress(dll.hdll, "gCurrAreaIndex");
+    }
+
+    int DecodeAndExecuteDiff(Input* m64Diff)
+    {
+        Input* gControllerPads = (Input*)GetProcAddress(dll.hdll, "gControllerPads");
+        VOIDFUNC sm64_update = (VOIDFUNC)GetProcAddress(dll.hdll, "sm64_update");
+
+        int frameOffset = 0;
+
+        //UPDATED FOR SEGMENTS STRUCT
+        //Before, I temporarily reversed the linked list.
+        //But this doesn't work in a multi threaded environment.
+        //Punt and do this in quadratic time. This shouldn't be a
+        //bottleneck anyway but can fix it if needed
+        if (tState.BaseBlock.tailSeg == 0)
+            printf("origBlock has null tailSeg");
+
+        Segment* thisTailSeg = tState.BaseBlock.tailSeg;
+        Segment* curSeg;
+        int thisSegDepth = thisTailSeg->depth;
+        for (int i = 1; i <= thisSegDepth; i++) {
+            curSeg = thisTailSeg;
+            while (curSeg->depth != i) {  //inefficient but probably doesn't matter
+                if (curSeg->parent == 0)
+                    printf("Parent is null!");
+                if (curSeg->parent->depth + 1 != curSeg->depth) { printf("Depths wrong"); }
+                curSeg = curSeg->parent;
+            }
+
+            //Run the inputs
+            uint64_t tmpSeed = curSeg->seed;
+            int megaRandom = Utils::xoro_r(&tmpSeed) % 2;
+            for (int f = 0; f < curSeg->numFrames; f++) {
+                perturbInput(&tState.CurrentInput, &tmpSeed, frameOffset, megaRandom);
+                m64Diff[frameOffset++] = tState.CurrentInput;
+                *gControllerPads = tState.CurrentInput;
+                sm64_update();
+
+                tState.UpdateLightning(config, GetStateBin());
+            }
+        }
+
+        return frameOffset;
+    }
+
+    void ExtendTasFromBlock(Input* m64Diff, int frameOffset, int megaRandom, uint64_t baseRngSeed, Vec3d prevStateBin)
+    {
+        VOIDFUNC sm64_update = (VOIDFUNC)GetProcAddress(dll.hdll, "sm64_update");
+        Input* gControllerPads = (Input*)GetProcAddress(dll.hdll, "gControllerPads");
+
+        for (int f = 0; f < config.SegmentLength; f++) {
+            perturbInput(&tState.CurrentInput, &tState.RngSeed, frameOffset + f, megaRandom);
+            m64Diff[frameOffset + f] = tState.CurrentInput;
+            *gControllerPads = tState.CurrentInput;
+
+            auto timerStart = omp_get_wtime();
+            sm64_update();
+            tState.RunTime += omp_get_wtime() - timerStart;
+
+            if (!ValidateCourseAndArea() || !ValidateBlock(m64Diff, frameOffset + f))
+                break;
+
+            Vec3d newStateBin = GetStateBin();
+            tState.UpdateLightning(config, newStateBin);
+
+            //fifd: Checks to see if we're in a new Block. If so, save off the segment so far.
+            timerStart = omp_get_wtime();
+            if (!newStateBin.truncEq(prevStateBin) && !newStateBin.truncEq(tState.BaseBlock.pos))
+            {
+                // Create and add block to list.
+                tState.ProcessNewBlock(config, gState, baseRngSeed, f, newStateBin, StateBinFitness());
+
+                prevStateBin = newStateBin; // TODO: Why this here?
+            }
+            tState.BlockTime += omp_get_wtime() - timerStart;
+        }
+    }
 
     //fifd: Where new inputs to try are actually produced
     //I think this is a perturbation of the previous frame's input to be used for the upcoming frame
-    static void perturbInput(HMODULE& dll, Input* in, uint64_t* seed, int frame, int megaRandom) {
-        void* gMarioStates = GetProcAddress(dll, "gMarioStates");
-        void* gObjectPool = GetProcAddress(dll, "gObjectPool");
-        void* gCamera = GetProcAddress(dll, "gCamera");
+    void perturbInput(Input* in, uint64_t* seed, int frame, int megaRandom) {
+        void* gMarioStates = GetProcAddress(dll.hdll, "gMarioStates");
+        void* gObjectPool = GetProcAddress(dll.hdll, "gObjectPool");
+        void* gCamera = GetProcAddress(dll.hdll, "gCamera");
 
         float* x = (float*)((char*)gMarioStates + 60);
         float* y = (float*)((char*)gMarioStates + 64);
@@ -241,12 +344,12 @@ public:
     //output has 3 spatial coordinates (which cube in space Mario is in) and a variable called
     //s, which contains information about the action, button presses, camera mode,
     //hspd, and yaw
-    static Vec3d truncFunc(HMODULE& dll)
+    Vec3d GetStateBin()
     {
-        void* gMarioStates = GetProcAddress(dll, "gMarioStates");
-        void* gObjectPool = GetProcAddress(dll, "gObjectPool");
-        void* gCamera = GetProcAddress(dll, "gCamera");
-        void* gControllers = (void*)GetProcAddress(dll, "gControllers");
+        void* gMarioStates = GetProcAddress(dll.hdll, "gMarioStates");
+        void* gObjectPool = GetProcAddress(dll.hdll, "gObjectPool");
+        void* gCamera = GetProcAddress(dll.hdll, "gCamera");
+        void* gControllers = (void*)GetProcAddress(dll.hdll, "gControllers");
 
         float* x = (float*)((char*)gMarioStates + 60);
         float* y = (float*)((char*)gMarioStates + 64);
@@ -336,12 +439,84 @@ public:
         return Vec3d{ (uint8_t)floor((*x + 2330) / 10), (uint8_t)floor((*y + 3200) / 50), (uint8_t)floor((*z + 1090) / 10), s };
     }
 
-    static float StateBinFitness(HMODULE& dll)
+    float StateBinFitness()
     {
-        void* gObjectPool = GetProcAddress(dll, "gObjectPool");
+        void* gObjectPool = GetProcAddress(dll.hdll, "gObjectPool");
         float* pyraYNorm = (float*)((char*)gObjectPool + 84 * 1392 + 328);
 
         return *pyraYNorm;
+    }
+
+    bool ValidateBlock(Input* m64Diff, int frame)
+    {
+        void* gMarioStates = GetProcAddress(dll.hdll, "gMarioStates");
+        void* gObjectPool = GetProcAddress(dll.hdll, "gObjectPool");
+        void* gCamera = GetProcAddress(dll.hdll, "gCamera");
+
+        float* marioX = (float*)((char*)gMarioStates + 60);
+        float* marioY = (float*)((char*)gMarioStates + 64);
+        float* marioZ = (float*)((char*)gMarioStates + 68);
+        unsigned int* marioAction = (unsigned int*)((char*)gMarioStates + 12);
+        uint16_t* marioYawFacing = (uint16_t*)((char*)gMarioStates + 46);
+        float* marioHSpd = (float*)((char*)gMarioStates + 0x54);
+        uint16_t* camYaw = (uint16_t*)((char*)gCamera + 340);
+        float* marioYVel = (float*)((char*)gMarioStates + 76);
+        float* marioFloorHeight = (float*)((char*)gMarioStates + 0x07C);
+
+        float* pyraXNorm = (float*)((char*)gObjectPool + 84 * 1392 + 324);
+        float* pyraYNorm = (float*)((char*)gObjectPool + 84 * 1392 + 328);
+        float* pyraZNorm = (float*)((char*)gObjectPool + 84 * 1392 + 332);
+
+        unsigned int actionTrunc = *marioAction & 0x1FF;
+
+        if (*marioX < -2330) return false;
+        if (*marioX > -1550) return false;
+        if (*marioZ < -1090) return false;
+        if (*marioZ > -300) return false;
+        if (*marioY > -2760) return false;
+        if (*pyraZNorm < -.15 || *pyraXNorm > 0.15) return false; //stay in desired quadrant
+        if (actionTrunc != ACT_BRAKE && actionTrunc != ACT_DIVE && actionTrunc != ACT_DIVE_LAND &&
+            actionTrunc != ACT_DR && actionTrunc != ACT_DR_LAND && actionTrunc != ACT_FREEFALL &&
+            actionTrunc != ACT_FREEFALL_LAND && actionTrunc != ACT_TURNAROUND_1 &&
+            actionTrunc != ACT_TURNAROUND_2 && actionTrunc != ACT_WALK) {
+            return false;
+        } //not useful action, such as lava boost
+        if (actionTrunc == ACT_FREEFALL && *marioYVel > -20.0) return false;//freefall without having done nut spot chain
+        if (*marioFloorHeight > -3071 && *marioY > *marioFloorHeight + 4 &&
+            *marioYVel != 22.0) return false;//above pyra by over 4 units
+        if (*marioFloorHeight == -3071 && actionTrunc != ACT_FREEFALL) return false; //diving/dring above lava
+
+        if (actionTrunc == ACT_DR && fabs(*pyraXNorm) > .3 && fabs(*pyraXNorm) + fabs(*pyraZNorm) > .65 &&
+            *marioX + *marioZ > (-1945 - 715)) {  //make sure Mario is going toward the right/east edge
+            char fileName[128];
+            //printf("dr\n");
+            sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\scattershot\\x64\\Debug\\m64s\\dr\\bitfs_dr_%f_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, *marioYVel, tState.Id);
+            Utils::writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\scattershot\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, frame + 1);
+        }
+
+        //check on hspd > 1 confirms we're in dr land rather than quickstopping,
+        //which gives the same action
+        if (actionTrunc == ACT_DR_LAND && *marioY > -2980 && *marioHSpd > 1
+            && fabs(*pyraXNorm) > .29 && fabs(*marioX) > -1680) {
+            char fileName[128];
+            //if(printingDRLand > 0)printf("dr land\n");
+            sprintf(fileName, "C:\\Users\\Tyler\\Documents\\repos\\scattershot\\x64\\Debug\\m64s\\drland\\bitfs_drland_%f_%f_%f_%d.m64", *pyraXNorm, *pyraYNorm, *pyraZNorm, tState.Id);
+            Utils::writeFile(fileName, "C:\\Users\\Tyler\\Documents\\repos\\scattershot\\x64\\Debug\\4_units_from_edge.m64", m64Diff, config.StartFrame, frame + 1);
+        }
+
+        return true;
+    }
+
+    void AdvanceToStart(SaveState& saveState, Input* fileInputs)
+    {
+        Input* gControllerPads = (Input*)GetProcAddress(dll.hdll, "gControllerPads");
+        VOIDFUNC sm64_update = (VOIDFUNC)GetProcAddress(dll.hdll, "sm64_update");
+
+        for (int f = 0; f < config.StartFrame + 5; f++) {
+            *gControllerPads = tState.CurrentInput = fileInputs[f];
+            sm64_update();
+            if (f == config.StartFrame - 1) saveState.save(dll);
+        }
     }
 };
 

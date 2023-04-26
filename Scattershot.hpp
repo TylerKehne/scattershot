@@ -105,6 +105,8 @@ public:
     int MaxSharedSegments;
     int MaxLocalSegments;
     int MaxLightningLength;
+    long long MaxShots;
+    int SegmentsPerShot;
 };
 
 class GlobalState
@@ -232,8 +234,7 @@ public:
     Vec3d BaseStateBin;
     Input CurrentInput;
 
-    int StartCourse;
-    int StartArea;
+
     double LoadTime = 0;
     double BlockTime = 0;
     double RunTime = 0;
@@ -255,7 +256,7 @@ public:
         printf("Thread %d\n", Id);
     }
 
-    void Initialize(Configuration& config, GlobalState& gState, Vec3d initTruncPos, HMODULE& dll)
+    void Initialize(Configuration& config, GlobalState& gState, Vec3d initTruncPos)
     {
         // Initial block
         Blocks[0].pos = initTruncPos; //CHEAT TODO NOTE
@@ -281,10 +282,6 @@ public:
         gState.AllSegments[gState.NSegments[Id] + Id * config.MaxLocalSegments] = Blocks[0].tailSeg;
         gState.NSegments[Id]++;
         gState.NBlocks[Id]++;
-
-        // Record start course/area for validation (generally scattershot has no cross-level value)
-        StartCourse = *(short*)GetProcAddress(dll, "gCurrCourseNum");
-        StartArea = *(short*)GetProcAddress(dll, "gCurrAreaIndex");
 
         LoopTimeStamp = omp_get_wtime();
     }
@@ -426,12 +423,6 @@ public:
         LoopTimeStamp = omp_get_wtime();
 
         printer.flushLog();
-    }
-
-    bool ValidateCourseAndArea(HMODULE& dll)
-    {
-        return StartCourse == *(short*)GetProcAddress(dll, "gCurrCourseNum")
-            && StartArea == *(short*)GetProcAddress(dll, "gCurrAreaIndex");
     }
 };
 

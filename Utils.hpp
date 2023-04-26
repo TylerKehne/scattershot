@@ -83,8 +83,9 @@ public:
     }
 
     template <typename F>
-    static void MultiThread(F func)
+    static void MultiThread(int nThreads, F func)
     {
+        omp_set_num_threads(nThreads);
         #pragma omp parallel
         {
             func();
@@ -159,6 +160,11 @@ public:
     HMODULE hdll;
 
     int dataStart, dataLength, bssStart, bssLength;
+
+    Dll(LPCWSTR path)
+    {
+        getDllInfo(path);
+    }
 
     void getDllInfo(LPCWSTR path) {
         hdll = LoadLibrary(path);
