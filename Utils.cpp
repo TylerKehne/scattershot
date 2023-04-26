@@ -1,6 +1,6 @@
 #include <Utils.hpp>
 
-const char Utils::dataMap[8192] = "  0 ...........................X...........XX.XXX.X....................................................."
+const char Dll::dataMap[8192] = "  0 ...........................X...........XX.XXX.X....................................................."
 "  1 ...................................................................................................."
 "  2 ...................................................................................................."
 "  3 ...................................................................................................."
@@ -27,7 +27,7 @@ const char Utils::dataMap[8192] = "  0 ...........................X...........XX
 " 24 ...................................................................................................."
 " 25 ...........................X........................................................................";
 
-const char Utils::bssMap[8192] = "  0 XX.....XXX.X................XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+const char Dll::bssMap[8192] = "  0 XX.....XXX.X................XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 "  1 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 "  2 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 "  3 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.XXXXXX................XXXXX.."

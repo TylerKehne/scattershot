@@ -32,7 +32,7 @@ class Utils
 {
 public:
     //fifd: only called by xoro_r
-    static const uint32_t rotl(const uint32_t x, int k) {
+    static inline const uint32_t rotl(const uint32_t x, int k) {
         return (x << k) | (x >> (32 - k));
     }
 
@@ -92,7 +92,6 @@ public:
         }
     }
 
-
     template <typename F>
     static void SingleThread(F func)
     {
@@ -104,26 +103,6 @@ public:
         #pragma omp barrier
 
         return;
-    }
-
-    static float dist3d(float a, float b, float c, float x, float y, float z) {
-        return sqrt((a - x) * (a - x) + (b - y) * (b - y) + (c - z) * (c - z));
-    }
-
-    static int angDist(unsigned short a, unsigned short b) {
-        int dist = abs((int)a - (int)b);
-        if (dist > 32768) dist = 65536 - dist;
-        return dist;
-    }
-
-    static int vibeCheck(float tarX, float tarZ, float tarT, float spd, float curX, float curZ, float curT) {
-        float dist = sqrt((curX - tarX) * (curX - tarX) + (curZ - tarZ) * (curZ - tarZ));
-        if (dist < (tarT - curT)* spd) return 1;
-        return 0;
-    }
-
-    static int leftLine(float a, float b, float c, float d, float e, float f) {
-        return (b - d) * (e - a) + (c - a) * (f - b) > 0 ? 0 : 1;
     }
 
     static Input* GetM64(const char* path)
@@ -147,9 +126,6 @@ public:
 
         return fileInputs;
     }
-
-    static const char dataMap[8192];
-    static const char bssMap[8192];
 };
 
 
@@ -158,8 +134,10 @@ class Dll
 {
 public:
     HMODULE hdll;
-
     int dataStart, dataLength, bssStart, bssLength;
+
+    static const char dataMap[8192];
+    static const char bssMap[8192];
 
     Dll(LPCWSTR path)
     {
@@ -225,22 +203,22 @@ public:
 
     void riskyLoad2(Dll& dll) {
         int off = 0;
-        for (int i = 0; i < strlen(Utils::dataMap); i++) {
-            if (Utils::dataMap[i] == 'X') {
+        for (int i = 0; i < strlen(Dll::dataMap); i++) {
+            if (Dll::dataMap[i] == 'X') {
                 memcpy((char*)dll.hdll + dll.dataStart + off, (char*)data + off, 1000);
                 off += 1000;
             }
-            if (Utils::dataMap[i] == '.') off += 1000;
+            if (Dll::dataMap[i] == '.') off += 1000;
         }
         off = 0;
-        for (int i = 0; i < strlen(Utils::bssMap); i++) {
-            if (Utils::bssMap[i] == 'X') {
+        for (int i = 0; i < strlen(Dll::bssMap); i++) {
+            if (Dll::bssMap[i] == 'X') {
                 if (!(off < 400000 && off >= 28000)) {
                     memcpy((char*)dll.hdll + dll.bssStart + off, (char*)bss + off, 1000);
                 }
                 off += 1000;
             }
-            if (Utils::bssMap[i] == '.') off += 1000;
+            if (Dll::bssMap[i] == '.') off += 1000;
         }
         memcpy((char*)dll.hdll + dll.bssStart + 28000, (char*)bss + 28000, 372000);
         memcpy((char*)dll.hdll + dll.bssStart + 4742000, (char*)bss + 4742000, 1000);

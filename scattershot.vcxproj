@@ -137,6 +137,7 @@
       <PreprocessorDefinitions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="Scattershot.cpp" />
+    <ClCompile Include="ThreadState.cpp" />
     <ClCompile Include="Utils.cpp" />
     <ClCompile Include="GlobalState.cpp" />
   </ItemGroup>

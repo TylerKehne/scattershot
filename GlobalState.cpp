@@ -1,6 +1,6 @@
 #include <Scattershot.hpp>
 
-GlobalState::GlobalState(Configuration& config)
+GlobalState::GlobalState(Configuration& config, Printer& printer) : config(config), printer(printer)
 {
     AllBlocks = (Block*)calloc(config.TotalThreads * config.MaxBlocks + config.MaxSharedBlocks, sizeof(Block));
     AllSegments = (struct Segment**)malloc((config.MaxSharedSegments + config.TotalThreads * config.MaxLocalSegments) * sizeof(struct Segment*));
@@ -15,7 +15,7 @@ GlobalState::GlobalState(Configuration& config)
         SharedHashTab[hashInx] = -1;
 }
 
-void GlobalState::MergeBlocks(Configuration& config, Printer& printer)
+void GlobalState::MergeBlocks()
 {
     printer.printfQ("Merging blocks.\n");
 
@@ -43,7 +43,7 @@ void GlobalState::MergeBlocks(Configuration& config, Printer& printer)
     }
 }
 
-void GlobalState::MergeSegments(Configuration& config)
+void GlobalState::MergeSegments()
 {
     printf("Merging segments\n");
 
@@ -60,7 +60,7 @@ void GlobalState::MergeSegments(Configuration& config)
     }
 }
 
-void GlobalState::SegmentGarbageCollection(Configuration& config)
+void GlobalState::SegmentGarbageCollection()
 {
     printf("Segment garbage collection. Start with %d segments\n", NSegments[config.TotalThreads]);
 
@@ -89,14 +89,14 @@ void GlobalState::SegmentGarbageCollection(Configuration& config)
     printf("Segment garbage collection finished. Ended with %d segments\n", NSegments[config.TotalThreads]);
 }
 
-void GlobalState::MergeState(Configuration& config, int mainIteration, Printer& printer)
+void GlobalState::MergeState(int mainIteration)
 {
     // Merge all blocks from all threads and redistribute info.
-    MergeBlocks(config, printer);
+    MergeBlocks();
 
     // Handle segments
-    MergeSegments(config);
+    MergeSegments();
 
-    if (mainIteration % 3000 == 0)
-        SegmentGarbageCollection(config);
+    if (mainIteration % (config.ShotsPerMerge * config.MergesPerSegmentGC) == 0)
+        SegmentGarbageCollection();
 }
