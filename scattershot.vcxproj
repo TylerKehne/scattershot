@@ -138,6 +138,7 @@
     </ClCompile>
     <ClCompile Include="Scattershot.cpp" />
     <ClCompile Include="Utils.cpp" />
+    <ClCompile Include="GlobalState.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Scattershot.hpp" />
