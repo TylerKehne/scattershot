@@ -105,6 +105,48 @@ public:
         return;
     }
 
+    static float dist3d(float a, float b, float c, float x, float y, float z) {
+        return sqrt((a - x) * (a - x) + (b - y) * (b - y) + (c - z) * (c - z));
+    }
+
+    static int angDist(unsigned short a, unsigned short b) {
+        int dist = abs((int)a - (int)b);
+        if (dist > 32768) dist = 65536 - dist;
+        return dist;
+    }
+
+    static int vibeCheck(float tarX, float tarZ, float tarT, float spd, float curX, float curZ, float curT) {
+        float dist = sqrt((curX - tarX) * (curX - tarX) + (curZ - tarZ) * (curZ - tarZ));
+        if (dist < (tarT - curT)* spd) return 1;
+        return 0;
+    }
+
+    static int leftLine(float a, float b, float c, float d, float e, float f) {
+        return (b - d) * (e - a) + (c - a) * (f - b) > 0 ? 0 : 1;
+    }
+
+    static Input* GetM64(const char* path)
+    {
+        Input in;
+        int length = 83600;
+        size_t inputSize = sizeof(Input);
+        size_t fileSize = inputSize * length;
+        Input* fileInputs = (Input*)malloc(fileSize);
+
+        FILE* fp = fopen(path, "rb");
+        fseek(fp, 0x400, SEEK_SET);
+
+        for (int i = 0; i < length; i++) {
+            fread(&in, inputSize, 1, fp);
+            in.b = (in.b >> 8) | (in.b << 8); // Fuck me endianness
+            fileInputs[i] = in;
+        }
+
+        fclose(fp);
+
+        return fileInputs;
+    }
+
     static const char dataMap[8192];
     static const char bssMap[8192];
 };

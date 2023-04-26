@@ -14,7 +14,7 @@ struct Segment {
     uint8_t depth;
 };
 
-typedef struct Block;
+class Block;
 
 //fifd: Vec3d actually has 4 dimensions, where the first 3 are spatial and
 //the 4th encodes a lot of information about Mario's state (actions, speed,
@@ -63,11 +63,25 @@ public:
 
 //fifd: I think this is an element of the partition of state
 //space. Will need to understand what each of its fields are
-typedef struct Block {
+class Block {
+public:
     Vec3d         pos;    //fifd: an output of truncFunc. Identifies which block this is
     float         value;    //fifd: a fitness of the best TAS that reaches this block; the higher the better.
     Segment* tailSeg;
     //Time is most important component of value but keeps higher hspeed if time is tied
+
+    //UPDATED FOR SEGMENT STRUCT
+    int blockLength() {
+        int len = 0;
+        Segment* curSeg = tailSeg;
+        if (tailSeg->depth == 0) { printf("tailSeg depth is 0!\n"); }
+        while (curSeg != 0) {
+            if (curSeg->depth == 0) { printf("curSeg depth is 0!\n"); }
+            len += curSeg->numFrames;
+            curSeg = curSeg->parent;
+        }
+        return len;
+    }
 };
 
 typedef struct {
@@ -117,6 +131,92 @@ public:
         // Init shared hash table.
         for (int hashInx = 0; hashInx < config.MaxSharedHashes; hashInx++)
             SharedHashTab[hashInx] = -1;
+    }
+
+    void MergeBlocks(Configuration& config, Printer& printer)
+    {
+        printer.printfQ("Merging blocks.\n");
+
+        int otid, n, m;
+        for (otid = 0; otid < config.TotalThreads; otid++) {
+            for (n = 0; n < NBlocks[otid]; n++) {
+                Block tmpBlock = AllBlocks[otid * config.MaxBlocks + n];
+                m = tmpBlock.pos.findBlock(SharedBlocks, SharedHashTab, config.MaxSharedHashes, 0, NBlocks[config.TotalThreads]);
+                if (m < NBlocks[config.TotalThreads]) {
+                    if (tmpBlock.value > SharedBlocks[m].value) { // changed to >
+                        SharedBlocks[m] = tmpBlock;
+                    }
+                }
+                else {
+                    SharedHashTab[tmpBlock.pos.findNewHashInx(SharedHashTab, config.MaxSharedHashes)] = NBlocks[config.TotalThreads];
+                    SharedBlocks[NBlocks[config.TotalThreads]++] = tmpBlock;
+                }
+            }
+        }
+
+        memset(AllHashTabs, 0xFF, config.MaxHashes * config.TotalThreads * sizeof(int)); // Clear all local hash tables.
+
+        for (otid = 0; otid < config.TotalThreads; otid++) {
+            NBlocks[otid] = 0; // Clear all local blocks.
+        }
+    }
+
+    void MergeSegments(Configuration& config)
+    {
+        printf("Merging segments\n");
+
+        // Get reference counts for each segment. Tried to track this but ran into
+        // multi-threading issues, so might as well recompute here.
+        for (int threadNum = 0; threadNum < config.TotalThreads; threadNum++) {
+            for (int segInd = threadNum * config.MaxLocalSegments; segInd < threadNum * config.MaxLocalSegments + NSegments[threadNum]; segInd++) {
+                //printf("%d %d\n", segInd, numSegs[totThreads]);
+                AllSegments[config.TotalThreads * config.MaxLocalSegments + NSegments[config.TotalThreads]] = AllSegments[segInd];
+                NSegments[config.TotalThreads]++;
+                AllSegments[segInd] = 0;
+            }
+            NSegments[threadNum] = 0;
+        }
+    }
+
+    void SegmentGarbageCollection(Configuration& config)
+    {
+        printf("Segment garbage collection. Start with %d segments\n", NSegments[config.TotalThreads]);
+
+        for (int segInd = config.TotalThreads * config.MaxLocalSegments; segInd < config.TotalThreads * config.MaxLocalSegments + NSegments[config.TotalThreads]; segInd++) {
+            AllSegments[segInd]->refCount = 0;
+        }
+        for (int segInd = config.TotalThreads * config.MaxLocalSegments; segInd < config.TotalThreads * config.MaxLocalSegments + NSegments[config.TotalThreads]; segInd++) {
+            if (AllSegments[segInd]->parent != 0) { AllSegments[segInd]->parent->refCount++; }
+        }
+        for (int blockInd = 0; blockInd < NBlocks[config.TotalThreads]; blockInd++) {
+            SharedBlocks[blockInd].tailSeg->refCount++;
+        }
+        for (int segInd = config.TotalThreads * config.MaxLocalSegments; segInd < config.TotalThreads * config.MaxLocalSegments + NSegments[config.TotalThreads]; segInd++) {
+            Segment* curSeg = AllSegments[segInd];
+            if (curSeg->refCount == 0) {
+                //printf("removing a seg\n");
+                if (curSeg->parent != 0) { curSeg->parent->refCount -= 1; }
+                //printf("moving %d %d\n", segInd, totThreads*maxLocalSegs+numSegs[totThreads]);
+                AllSegments[segInd] = AllSegments[config.TotalThreads * config.MaxLocalSegments + NSegments[config.TotalThreads] - 1];
+                NSegments[config.TotalThreads]--;
+                segInd--;
+                free(curSeg);
+            }
+        }
+
+        printf("Segment garbage collection finished. Ended with %d segments\n", NSegments[config.TotalThreads]);
+    }
+
+    void MergeState(Configuration& config, int mainIteration, Printer& printer)
+    {
+        // Merge all blocks from all threads and redistribute info.
+        MergeBlocks(config, printer);
+
+        // Handle segments
+        MergeSegments(config);
+
+        if (mainIteration % 3000 == 0)
+            SegmentGarbageCollection(config);
     }
 };
 
@@ -263,6 +363,69 @@ public:
         }
 
         return true;
+    }
+
+    void ProcessNewBlock(Configuration& config, GlobalState& gState, uint64_t prevRngSeed, int nFrames, Vec3d newPos, float newFitness)
+    {
+        Block newBlock;
+
+        // Create and add block to list.
+        if (gState.NBlocks[Id] == config.MaxBlocks) {
+            printf("Max local blocks reached!\n");
+        }
+        else {
+            //UPDATED FOR SEGMENTS STRUCT
+            newBlock = BaseBlock;
+            newBlock.pos = newPos;
+            newBlock.value = newFitness;
+            int blInxLocal = newPos.findBlock(Blocks, HashTab, config.MaxHashes, 0, gState.NBlocks[Id]);
+            int blInx = newPos.findBlock(gState.SharedBlocks, gState.SharedHashTab, config.MaxSharedHashes, 0, gState.NBlocks[config.TotalThreads]);
+
+            if (blInxLocal < gState.NBlocks[Id]) { // Existing local block.
+                if (newBlock.value >= Blocks[blInxLocal].value) {
+                    Segment* newSeg = (Segment*)malloc(sizeof(Segment));
+                    newSeg->parent = BaseBlock.tailSeg;
+                    newSeg->refCount = 0;
+                    newSeg->numFrames = nFrames + 1;
+                    newSeg->seed = prevRngSeed;
+                    newSeg->depth = BaseBlock.tailSeg->depth + 1;
+                    if (newSeg->depth == 0) { printf("newSeg depth is 0!\n"); }
+                    if (BaseBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
+                    newBlock.tailSeg = newSeg;
+                    gState.AllSegments[Id * config.MaxLocalSegments + gState.NSegments[Id]] = newSeg;
+                    gState.NSegments[Id] += 1;
+                    Blocks[blInxLocal] = newBlock;
+                }
+            }
+            else if (blInx < gState.NBlocks[config.TotalThreads] && newBlock.value < gState.SharedBlocks[blInx].value);// Existing shared block but worse.
+            else { // Existing shared block and better OR completely new block.
+                HashTab[newPos.findNewHashInx(HashTab, config.MaxHashes)] = gState.NBlocks[Id];
+                Segment* newSeg = (Segment*)malloc(sizeof(Segment));
+                newSeg->parent = BaseBlock.tailSeg;
+                newSeg->refCount = 1;
+                newSeg->numFrames = nFrames + 1;
+                newSeg->seed = prevRngSeed;
+                newSeg->depth = BaseBlock.tailSeg->depth + 1;
+                if (newSeg->depth == 0) { printf("newSeg depth is 0!\n"); }
+                if (BaseBlock.tailSeg->depth == 0) { printf("origBlock tailSeg depth is 0!\n"); }
+                newBlock.tailSeg = newSeg;
+                gState.AllSegments[Id * config.MaxLocalSegments + gState.NSegments[Id]] = newSeg;
+                gState.NSegments[Id] += 1;
+                Blocks[gState.NBlocks[Id]++] = newBlock;
+            }
+        }
+    }
+
+    void PrintStatus(Configuration& config, GlobalState& gState, int mainIteration, Printer& printer)
+    {
+        printer.printfQ("\nThread ALL Loop %d blocks %d\n", mainIteration, gState.NBlocks[config.TotalThreads]);
+        printer.printfQ("LOAD %.3f RUN %.3f BLOCK %.3f TOTAL %.3f\n", LoadTime, RunTime, BlockTime, omp_get_wtime() - LoopTimeStamp);
+        printer.printfQ("\n\n");
+
+        LoadTime = RunTime = BlockTime = 0;
+        LoopTimeStamp = omp_get_wtime();
+
+        printer.flushLog();
     }
 
     bool ValidateCourseAndArea(HMODULE& dll)
