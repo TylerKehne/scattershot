@@ -37,12 +37,12 @@
 *.user
 *.m64
 
-uscx/uscx/Debug/
-uscx/uscx/x64/
-uscx/.vs/
-uscx/uscx/.vs/
-uscx/Debug/
-uscx/x64/
+scattershot/scattershot/Debug/
+scattershot/scattershot/x64/
+scattershot/.vs/
+scattershot/scattershot/.vs/
+scattershot/Debug/
+scattershot/x64/
 x64/Debug
 .vs/
 
