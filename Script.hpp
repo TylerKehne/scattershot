@@ -69,15 +69,12 @@ public:
     int StartCourse;
     int StartArea;
 
-    Script(Configuration& config, GlobalState& gState, ThreadState& tState, Dll& dll) : config(config), gState(gState), tState(tState), dll(dll)
-    {
-
-
-    }
+    Script(Configuration& config, GlobalState& gState, ThreadState& tState, Dll& dll)
+        : config(config), gState(gState), tState(tState), dll(dll) { }
 
     void Initialize(Vec3d initTruncPos)
     {
-        tState.Initialize(config, gState, initTruncPos);
+        tState.Initialize(initTruncPos);
 
         // Record start course/area for validation (generally scattershot has no cross-level value)
         StartCourse = *(short*)GetProcAddress(dll.hdll, "gCurrCourseNum");
@@ -126,7 +123,7 @@ public:
                 *gControllerPads = tState.CurrentInput;
                 sm64_update();
 
-                tState.UpdateLightning(config, GetStateBin());
+                tState.UpdateLightning(GetStateBin());
             }
         }
 
@@ -151,14 +148,14 @@ public:
                 break;
 
             Vec3d newStateBin = GetStateBin();
-            tState.UpdateLightning(config, newStateBin);
+            tState.UpdateLightning(newStateBin);
 
             //fifd: Checks to see if we're in a new Block. If so, save off the segment so far.
             timerStart = omp_get_wtime();
             if (!newStateBin.truncEq(prevStateBin) && !newStateBin.truncEq(tState.BaseBlock.pos))
             {
                 // Create and add block to list.
-                tState.ProcessNewBlock(config, gState, baseRngSeed, f, newStateBin, StateBinFitness());
+                tState.ProcessNewBlock(baseRngSeed, f, newStateBin, StateBinFitness());
 
                 prevStateBin = newStateBin; // TODO: Why this here?
             }

@@ -17,6 +17,8 @@ void InitConfiguration(Configuration& configuration)
     configuration.MaxLightningLength = 10000;
     configuration.MaxShots = 1000000000;
     configuration.SegmentsPerShot = 200;
+    configuration.ShotsPerMerge = 300;
+    configuration.MergesPerSegmentGC = 10;
 }
 
 void main(int argc, char* argv[])
@@ -26,7 +28,7 @@ void main(int argc, char* argv[])
 
     Configuration config;
     InitConfiguration(config);
-    GlobalState gState = GlobalState(config);
+    GlobalState gState = GlobalState(config, printer);
 
     Utils::MultiThread(config.TotalThreads, [&]()
         {
@@ -59,15 +61,15 @@ void main(int argc, char* argv[])
 
             for (int mainIteration = 0; mainIteration <= config.MaxShots; mainIteration++) {
                 // ALWAYS START WITH A MERGE SO THE SHARED BLOCKS ARE OK.
-                if (mainIteration % 300 == 0)
+                if (mainIteration % config.ShotsPerMerge == 0)
                     Utils::SingleThread([&]()
                         { 
-                            gState.MergeState(config, mainIteration, printer);
-                            tState.PrintStatus(config, gState, mainIteration, printer);
+                            gState.MergeState(mainIteration);
+                            tState.PrintStatus(mainIteration);
                         });
 
                 // Pick a block to "fire a scattershot" at
-                if (!tState.SelectBaseBlock(config, gState, mainIteration))
+                if (!tState.SelectBaseBlock(mainIteration))
                     break;
 
                 // Revert to initial state, and advance game state to end of block diff
